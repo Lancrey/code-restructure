@@ -78,6 +78,7 @@ TOKEN_FORMATS = [
 PLACEHOLDER = re.compile(
     r"^(?:x+|\*+|\.+|changeme|change[_-]?me|your[_-].*|my[_-]?(?:secret|key|password|token)|example.*|"
     r"dummy.*|test.*|todo|none|null|false|true|password|secret|token|<.*>|\$\{.*\}|\{\{.*\}\}|%\(.*\)s|%.*%)$", re.I)
+GENERIC_SECRET_NAMES = {"key", "keys", "token", "tokens", "salt", "auth", "credential", "credentials", "crypto"}
 CODE_LOOKUP = re.compile(r"(getenv|environ|process\.env|config\(|ENV\[|\$_(?:ENV|SERVER)|System\.getenv|os\.Getenv)", re.I)
 
 
@@ -185,7 +186,12 @@ def scan_file(path, rel):
             c = confidence(val)
             if not c:
                 continue
-            hits.append((rel, ln, clean_name(m.group("name")), val, c))
+            name = clean_name(m.group("name"))
+            # a bare `key`/`token`/`salt` is usually a map key or a loop variable (`key: 'playlist'`):
+            # keep it only when the value itself looks like a secret
+            if c == "low" and name.lower() in GENERIC_SECRET_NAMES:
+                continue
+            hits.append((rel, ln, name, val, c))
             seen.add(val)
         if is_env:
             m = DOTENV.match(line)
