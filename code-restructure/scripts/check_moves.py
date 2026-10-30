@@ -63,10 +63,11 @@ GENERIC_NAMES = {
 }
 
 
-JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte", ".json")
+JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte", ".json",
+           ".d.ts", ".d.mts", ".d.cts")
 JS_SRC = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"}
 REL_JS = re.compile(r"""(?:\bfrom|\bimport|\brequire)\s*\(?\s*['"](\.{1,2}(?:/[^'"\n]*)?)['"]""")
-REL_PY = re.compile(r"^\s*from\s+(\.+)([\w.]*)\s+import\b")
+REL_PY = re.compile(r"^\s*from\s+(\.+)([\w.]*)\s+import\s+(.*)$")
 JS_SWAP = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
 
 
@@ -82,14 +83,54 @@ def js_resolves(repo, base):
     return any((repo / c).is_file() for c in cands)
 
 
-def py_resolves(repo, importer, dots, mod):
+def py_resolves(repo, importer, dots, mod, names):
+    """Return the list of unresolved specs for one relative import (empty = fine)."""
     pkg = posixpath.dirname(importer)
     for _ in range(len(dots) - 1):
         pkg = posixpath.dirname(pkg)
-    if not mod:
-        return True  # `from . import name`: name may be a module or a symbol
-    base = posixpath.join(pkg, mod.replace(".", "/"))
-    return (repo / (base + ".py")).is_file() or (repo / base).is_dir()
+    if mod:
+        base = posixpath.join(pkg, mod.replace(".", "/"))
+        ok = (repo / (base + ".py")).is_file() or (repo / (base + ".pyi")).is_file() or (repo / base).is_dir()
+        return [] if ok else [dots + mod]
+    # `from . import a, b as c`: each name is a sibling module/package, or a symbol defined
+    # or imported in the package's __init__.py — anything else is unresolved
+    init_txt = ""
+    init = repo / pkg / "__init__.py"
+    if init.is_file():
+        init_txt = init.read_text(encoding="utf-8", errors="replace")
+    bad = []
+    for raw in names.strip("() ").split(","):
+        name = raw.strip().split(" as ")[0].strip()
+        if not name or name == "*" or name.startswith("#"):
+            continue
+        here = posixpath.join(pkg, name)
+        if (repo / (here + ".py")).is_file() or (repo / (here + ".pyi")).is_file() or (repo / here).is_dir():
+            continue
+        if init_binds(name, init_txt):
+            continue
+        bad.append(dots + " import " + name)
+    return bad
+
+
+def init_binds(name, init_txt):
+    """True if __init__.py binds `name`: def/class/assignment, `import x as name`, `from m import name`."""
+    n = re.escape(name)
+    if re.search(r"^\s*(?:def|class)\s+%s\b" % n, init_txt, re.M):
+        return True
+    if re.search(r"^\s*%s\s*(?::[^=\n]+)?=[^=]" % n, init_txt, re.M):
+        return True
+    for m in re.finditer(r"^\s*import\s+(.+)$", init_txt, re.M):
+        for item in m.group(1).split(","):
+            parts = item.strip().split()
+            bound = parts[-1] if len(parts) == 3 and parts[1] == "as" else parts[0].split(".")[0]
+            if bound == name:
+                return True
+    for m in re.finditer(r"^\s*from\s+\S+\s+import\s+\(?([^)#\n]+)", init_txt, re.M):
+        for item in m.group(1).split(","):
+            parts = item.strip().split()
+            if parts and (parts[-1] if len(parts) == 3 and parts[1] == "as" else parts[0]) == name:
+                return True
+    return False
 
 
 def unresolved_relative_imports(repo, files, moved_hint):
@@ -106,8 +147,14 @@ def unresolved_relative_imports(repo, files, moved_hint):
         for ln, line in enumerate(text.splitlines(), 1):
             if ext == ".py":
                 m = REL_PY.match(line)
-                if m and not py_resolves(repo, rel, m.group(1), m.group(2)):
-                    out.append((rel, ln, m.group(1) + m.group(2), ""))
+                if m:
+                    for spec in py_resolves(repo, rel, m.group(1), m.group(2), m.group(3)):
+                        stem = spec.split(" import ")[-1].lstrip(".").split(".")[0]
+                        pkg_dir = posixpath.dirname(rel)
+                        for _ in range(len(m.group(1)) - 1):
+                            pkg_dir = posixpath.dirname(pkg_dir)
+                        hint = moved_hint.get(posixpath.join(pkg_dir, stem)) or moved_hint.get(posixpath.join(pkg_dir, stem) + ".py") or ""
+                        out.append((rel, ln, spec, hint))
                 continue
             for m in REL_JS.finditer(line):
                 spec = m.group(1)
@@ -212,6 +259,9 @@ def main():
     ap.add_argument("--ignore-docs", action="store_true", help="skip Markdown/RST files (default: included, since READMEs link to paths)")
     ap.add_argument("--json", help="write hits to this JSON file")
     ap.add_argument("--no-imports", action="store_true", help="skip the relative-import resolution check")
+    ap.add_argument("--in-progress", action="store_true",
+                    help="mid-migration run: rows whose From still exists and To does not are PENDING and skipped "
+                         "(reported as a count); without this flag every row of the plan must be done")
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
@@ -248,16 +298,22 @@ def main():
     if plan_rel:
         allow.append(plan_rel)
 
-    token_map = {}  # token -> (from, to, new_forms)
+    # a From listed several times is a SPLIT (one module becomes several): references to the old
+    # location are stale for all of them, and any destination's form counts as "already updated"
+    dests = {}
     for frm, to, _ in moves:
-        if frm == to:
-            continue
-        new_forms = tokens_for(to)
+        if frm != to:
+            dests.setdefault(frm, []).append(to)
+    token_map = {}  # token -> (from, to, new_forms)
+    for frm, tos in dests.items():
+        new_forms = set()
+        for to in tos:
+            new_forms |= tokens_for(to)
         for t in tokens_for(frm):
             # a token that is a prefix of the destination would match the new path too
-            if to.startswith(t.rstrip("/")) and not t.endswith("/"):
+            if any(to.startswith(t.rstrip("/")) for to in tos) and not t.endswith("/"):
                 continue
-            token_map.setdefault(t, (frm, to, new_forms))
+            token_map.setdefault(t, (frm, " | ".join(tos), new_forms))
     # longest tokens first so "src/utils.py" is reported rather than "utils"
     tokens = sorted(token_map, key=len, reverse=True)
     pattern = re.compile("|".join(re.escape(t) for t in tokens)) if tokens else None
@@ -297,22 +353,40 @@ def main():
             if any(nf in line and tok in nf and len(nf) > len(tok) for nf in new_forms):
                 continue
             # a hit on a bare filename inside its own new location is not stale
-            if rel == to or rel.startswith(to.rstrip("/") + "/"):
+            if any(rel == t_ or rel.startswith(t_.rstrip("/") + "/") for t_ in to.split(" | ")):
                 if tok == os.path.basename(frm) or tok == os.path.splitext(os.path.basename(frm))[0]:
                     continue
             hits.append({"file": rel, "line": ln, "token": tok, "from": frm, "to": to, "text": line.strip()[:200]})
 
     # relocation table vs disk: after the migration every From must be gone (unless it is a shim
-    # listed with --allow) and every To must exist
-    table_problems = []
+    # listed with --allow) and every To must exist. With --in-progress, a row whose From is still
+    # there and whose To is absent has simply not been done yet: it is skipped everywhere.
+    table_problems, pending = [], set()
     for frm, to, _ in moves:
         f, t = frm.strip().rstrip("/"), to.strip().rstrip("/")
-        if f == t or any(ch in f for ch in "*?[]"):
+        if f == t:
             continue
-        if (repo / f).exists() and not any(fnmatch.fnmatch(f, a) or f == a for a in allow):
+        if any(ch in f for ch in "*?[]"):
+            left = [str(p.relative_to(repo)) for p in repo.glob(f) if p.is_file()]
+            if left:
+                if args.in_progress:
+                    pending.add(frm)
+                else:
+                    table_problems.append(f"From glob still matches {len(left)} file(s) on disk: {f}  (e.g. {left[0]})")
+            continue
+        from_exists = (repo / f).exists()
+        to_checkable = not any(ch in t for ch in "*?[]<>")
+        to_exists = (repo / t).exists() if to_checkable else True
+        if args.in_progress and from_exists and not to_exists:
+            pending.add(frm)
+            continue
+        if from_exists and not any(fnmatch.fnmatch(f, a) or f == a for a in allow):
             table_problems.append(f"From still exists on disk: {f}  (move not done, or an unlisted shim: add --allow {f})")
-        if not any(ch in t for ch in "*?[]<>") and not (repo / t).exists():
+        if to_checkable and not to_exists:
             table_problems.append(f"To does not exist on disk: {t}  (from {f})")
+    if pending:
+        hits = [h for h in hits if h["from"] not in pending]
+        print(f"{len(pending)} pending row(s) skipped (--in-progress): " + ", ".join(sorted(pending)[:8]) + (" …" if len(pending) > 8 else ""))
 
     broken = []
     if not args.no_imports:

@@ -81,6 +81,12 @@ class Pbxproj(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("0 file references", out)
 
+    def test_synchronized_project_is_not_verified_exit_3(self):
+        r = make_repo({"App.xcodeproj/project.pbxproj": "// !$*UTF8*$!\n{ objects = { X = {isa = PBXFileSystemSynchronizedRootGroup; }; }; }\n"})
+        code, out = run_script("pbxproj_check.py", r)
+        self.assertEqual(code, 3, out)
+        self.assertIn("NOT VERIFIED", out)
+
     def test_unreferenced_file_detected(self):
         r = self.repo()
         write(r, {"Sources/b.swift": "let b = 2\n"})

@@ -25,6 +25,12 @@ Usage:
                           [--exclude GLOB ...] [--json hits.json]
   python3 secrets_scan.py <repo> --verify docs/architecture-audit.md restructure-evidence/
 
+Git-ignored files (a local .env, config.local.php…) ARE scanned by default, tagged
+[git-ignored, not committed] in the list, and their values are part of --verify: they are
+not in the repository's history, but they are on disk and can be pasted into a report.
+--no-ignored turns this off. --strict with --verify also checks plain-word low-confidence
+values ("sunshine"), at the cost of false alarms on ordinary words.
+
 Exit code: scan 0 (hits are information, not failure); verify 0 clean / 1 leak; 2 usage.
 """
 import argparse
@@ -48,6 +54,7 @@ BINARY_EXT = {
 }
 TOP_LEVEL_EXCLUDE = {"dist", "build", "out", "target"}  # build outputs, only at the repo root
 MAX_BYTES = 2_000_000
+IGNORED = set()  # git-ignored files that were scanned (filled by iter_files)
 
 NAME_WORDS = (r"secret|passw(?:or)?d|pwd|passphrase|token|salt|credential|api[_-]?key|"
               r"private[_-]?key|access[_-]?key|crypto|key")
@@ -97,11 +104,19 @@ def confidence(val):
     return "low"
 
 
-def iter_files(repo, excludes):
+def iter_files(repo, excludes, include_ignored=True):
+    """Tracked and untracked files; by default also git-IGNORED files (a local .env is exactly where
+    credentials live, and it can be pasted into a report like anything else). Dependency and build
+    directories stay excluded either way."""
     try:
         out = subprocess.run(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                              capture_output=True, text=True, check=True, timeout=120).stdout
         rels = [r for r in out.split("\0") if r]
+        if include_ignored:
+            ign = subprocess.run(["git", "-C", str(repo), "ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+                                 capture_output=True, text=True, check=True, timeout=120).stdout
+            IGNORED.update(r for r in ign.split("\0") if r)
+            rels += sorted(IGNORED)
     except Exception:
         rels = []
         for root, dirs, names in os.walk(repo):
@@ -202,19 +217,20 @@ def scan_file(path, rel):
     return hits
 
 
-def scan_repo(repo, excludes):
+def scan_repo(repo, excludes, include_ignored=True):
     hits = []
-    for rel in iter_files(repo, excludes):
+    for rel in iter_files(repo, excludes, include_ignored):
         hits += scan_file(repo / rel, rel)
     return hits
 
 
-def verify(repo, hits, targets):
+def verify(repo, hits, targets, strict=False):
     values = {}
     for rel, ln, name, val, c in hits:
         # every high-confidence value; low-confidence ones only when they are not a plain word
-        # (a plain word such as "authority" would flag legitimate prose in the reports)
-        if c == "high" or (len(val) >= 8 and re.search(r"[\d@#$%^&*!+=]", val)):
+        # (a plain word such as "authority" would flag legitimate prose in the reports) —
+        # unless --strict, which checks every candidate value of 6+ characters
+        if strict or c == "high" or (len(val) >= 8 and re.search(r"[\d@#$%^&*!+=]", val)):
             values.setdefault(val, f"{name}")
     leaks = []
     files = []
@@ -254,16 +270,18 @@ def main():
     ap.add_argument("--exclude", action="append", default=[], help="glob of files to skip (repeatable)")
     ap.add_argument("--all", action="store_true", help="also list low-confidence hits (name looks secret, value looks like a word)")
     ap.add_argument("--verify", nargs="+", metavar="PATH", help="check these files/folders for leaked values")
+    ap.add_argument("--strict", action="store_true", help="with --verify: check every candidate value, including plain-word low-confidence ones (more noise, catches DB_PASSWORD=\"sunshine\")")
+    ap.add_argument("--no-ignored", action="store_true", help="do not scan git-ignored files (.env etc. are scanned by default)")
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
     if not repo.is_dir():
         print("repo not found", file=sys.stderr)
         sys.exit(2)
-    hits = scan_repo(repo, args.exclude)
+    hits = scan_repo(repo, args.exclude, include_ignored=not args.no_ignored)
 
     if args.verify:
-        leaks, nfiles, nvals = verify(repo, hits, args.verify)
+        leaks, nfiles, nvals = verify(repo, hits, args.verify, strict=args.strict)
         if leaks:
             print(f"LEAK: {len(leaks)} secret value(s) found in {nfiles} checked file(s):")
             for f, ln, name in leaks:
@@ -286,6 +304,8 @@ def main():
         if c == "low" and not args.all:
             continue
         tag = " [moved]" if moved_src and is_moved(rel, moved_src) else ""
+        if rel in IGNORED:
+            tag += " [git-ignored, not committed]"
         lines.append(f"{rel}:{ln} {name} = <redacted> [{c}]{tag}")
         rows.append({"file": rel, "line": ln, "name": name, "confidence": c, "moved": bool(tag)})
     report = "\n".join(lines) if lines else "no hard-coded secret found"

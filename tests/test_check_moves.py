@@ -109,6 +109,46 @@ class CheckMoves(unittest.TestCase):
         self.assertIn("internal/build/ref.go", out)
         self.assertNotIn("dist/x.js", out)
 
+    def test_in_progress_skips_pending_rows_final_does_not(self):
+        r = make_repo({"a/one.py": "", "a/two.py": "", "ref.py": "x = 'a/two.py'\n"})
+        moved(r, "a/one.py", "b/one.py")
+        args = ["--moves", "a/one.py=b/one.py", "--moves", "a/two.py=b/two.py", "--no-imports"]
+        code, out = run_script("check_moves.py", r, *args, "--in-progress")
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 pending row(s)", out)
+        code, out = run_script("check_moves.py", r, *args)
+        self.assertEqual(code, 1, out)
+        self.assertIn("From still exists on disk: a/two.py", out)
+        self.assertIn("ref.py", out)
+
+    def test_glob_row_with_file_left_behind(self):
+        r = make_repo({"plugins/a.py": "", "plugins/b.py": ""})
+        moved(r, "plugins/a.py", "src/plugins/a.py")
+        code, out = run_script("check_moves.py", r, "--moves", "plugins/*.py=src/plugins/", "--no-imports")
+        self.assertEqual(code, 1, out)
+        self.assertIn("plugins/b.py", out)
+
+    def test_split_destinations_both_count_as_updated(self):
+        r = make_repo({"src/utils.py": "", "src/main.py": "from src.core.text import a\nfrom src.core.dates import b\n"})
+        moved(r, "src/utils.py", "src/core/text.py")
+        write(r, {"src/core/dates.py": ""})
+        code, out = run_script("check_moves.py", r, "--moves", "src/utils.py=src/core/text.py", "--moves", "src/utils.py=src/core/dates.py", "--no-imports")
+        self.assertEqual(code, 0, out)
+
+    def test_python_from_dot_import_name_of_moved_module(self):
+        r = make_repo({"pkg/__init__.py": "from .lib.helpers import f\n", "pkg/lib/helpers.py": "def f(): pass\n",
+                       "pkg/mod.py": "from . import helpers, f\nfrom . import lib\n"})
+        code, out = run_script("check_moves.py", r, "--moves", "pkg/helpers.py=pkg/lib/helpers.py")
+        self.assertEqual(code, 1, out)
+        self.assertIn("pkg/mod.py:1  . import helpers", out)
+        self.assertNotIn("import f", out)
+        self.assertNotIn("import lib", out)
+
+    def test_ts_declaration_file_resolves(self):
+        r = make_repo({"src/types.d.ts": "export interface U {}\n", "src/a.ts": "import type { U } from './types';\n", "z/b.py": ""})
+        code, out = run_script("check_moves.py", r, "--moves", "z/a.py=z/b.py")
+        self.assertEqual(code, 0, out)
+
     def test_no_imports_flag_skips_resolution(self):
         r = make_repo({"src/a/x.ts": "import { y } from './y';\n", "src/a/y.ts": ""})
         moved(r, "src/a/x.ts", "src/b/x.ts")

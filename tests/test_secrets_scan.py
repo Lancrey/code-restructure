@@ -54,6 +54,21 @@ class SecretsScan(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertEqual(out.count("docs/leak.md:1"), 3, out)
 
+    def test_ignored_env_is_scanned_and_strict_catches_plain_words(self):
+        r = make_repo({"config.ini": 'DB_PASSWORD="sunshine"\n', ".gitignore": ".env\n", "docs/a.md": "x\n"})
+        write(r, {".env": "API_SECRET=L0calOnly!Secret99\n"})
+        code, out = run_script("secrets_scan.py", r, "--all")
+        self.assertIn(".env:1 API_SECRET = <redacted> [high] [git-ignored, not committed]", out)
+        write(r, {"docs/leak.md": "sunshine and L0calOnly!Secret99\n"})
+        code, out = run_script("secrets_scan.py", r, "--verify", r / "docs")
+        self.assertEqual(code, 1, out)
+        self.assertIn("API_SECRET", out)
+        self.assertNotIn("DB_PASSWORD", out)
+        code, out = run_script("secrets_scan.py", r, "--verify", r / "docs", "--strict")
+        self.assertIn("DB_PASSWORD", out)
+        code, out = run_script("secrets_scan.py", r, "--no-ignored", "--all")
+        self.assertNotIn(".env", out)
+
     def test_plan_tags_moved_files(self):
         r = self.repo()
         write(r, {"plan.md": "| From | To | Note |\n|---|---|---|\n| config.php | conf/config.php | |\n"})

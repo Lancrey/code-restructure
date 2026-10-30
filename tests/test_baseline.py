@@ -58,6 +58,20 @@ class Counters(unittest.TestCase):
         self.assertEqual(baseline.parse_counters("npm:lint", "✖ 7 problems (2 errors, 5 warnings)"), {"findings": 7})
 
 
+class Redaction(unittest.TestCase):
+    def test_runtime_secrets_are_redacted_in_saved_tails(self):
+        out = baseline.redact("postgres://admin:Sup3r@db/x password=hunter2 Authorization: Bearer abc.def AKIAABCDEFGHIJKLMNOP 40 passed")
+        for v in ("Sup3r", "hunter2", "AKIAABCDEFGHIJKLMNOP"):
+            self.assertNotIn(v, out)
+        self.assertIn("40 passed", out)
+        self.assertIn("admin:<redacted>@db", out)
+
+    def test_pbxproj_exit_3_is_unverified(self):
+        r = make_repo({"marker": "x\n"})
+        rec = baseline.run_check(r, {"id": "pbxproj-files", "cmd": "exit 3", "kind": "build", "note": ""}, 10)
+        self.assertEqual(rec["status"], "unverified")
+
+
 class Detect(unittest.TestCase):
     def test_pytest_detected_from_root_test_file_without_config(self):
         r = make_repo({"setup.py": "", "test_x.py": "def test_a(): pass\n", "pkg/__init__.py": ""})

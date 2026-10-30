@@ -240,6 +240,24 @@ def parse_counters(cid, output):
     return counters
 
 
+# runtime output can print credentials that are not in the repository (a test runner echoing a
+# connection string, a token from the environment): the saved tails are redacted before writing
+REDACT = [
+    re.compile(r"(?i)((?:password|passwd|pwd|secret|token|api[_-]?key|authorization|bearer)\s*[:=]\s*)(\S+)"),
+    re.compile(r"([a-zA-Z][a-zA-Z0-9+.\-]*://[^/\s:@'\"]+:)([^@\s/'\"]+)(@)"),
+    re.compile(r"\b(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abprs]-[A-Za-z0-9\-]{10,}|(?:sk|rk)_live_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_\-]{35}|sk-(?:ant-)?[A-Za-z0-9_\-]{30,})\b"),
+    re.compile(r"(-----BEGIN [A-Z ]*PRIVATE KEY-----)[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----)"),
+]
+
+
+def redact(text):
+    text = REDACT[0].sub(lambda m: m.group(1) + "<redacted>", text)
+    text = REDACT[1].sub(lambda m: m.group(1) + "<redacted>" + m.group(3), text)
+    text = REDACT[2].sub("<redacted>", text)
+    text = REDACT[3].sub(lambda m: m.group(1) + " <redacted> " + m.group(2), text)
+    return text
+
+
 def run_check(repo: Path, check, timeout):
     t0 = time.time()
     try:
@@ -249,6 +267,8 @@ def run_check(repo: Path, check, timeout):
         )
         rc, out, err = proc.returncode, proc.stdout, proc.stderr
         status = "pass" if rc == 0 else "fail"
+        if rc == 3 and check["id"].startswith("pbxproj"):
+            status = "unverified"  # the project uses synchronized folders: nothing to compare, nothing proven
     except subprocess.TimeoutExpired as e:
         rc, out, err = None, (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or ""), "TIMEOUT"
         status = "timeout"
@@ -259,9 +279,9 @@ def run_check(repo: Path, check, timeout):
         "status": status,
         "exit_code": rc,
         "duration_s": dur,
-        "counters": parse_counters(check["id"], combined),
-        "stdout_tail": (out or "")[-3000:],
-        "stderr_tail": (err or "")[-3000:],
+        "counters": parse_counters(check["id"], combined),  # counters are parsed from the raw output
+        "stdout_tail": redact((out or "")[-3000:]),
+        "stderr_tail": redact((err or "")[-3000:]),
     }
 
 

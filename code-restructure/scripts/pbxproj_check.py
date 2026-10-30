@@ -11,7 +11,7 @@ Works on any OS (no Xcode needed). Heuristic, text-based parsing of the old-styl
 plist; projects with synchronized folders (objectVersion >= 77) are reported as
 such and skipped, since they follow the disk.
 
-Usage: python3 pbxproj_check.py <repo>      exit 0 = consistent, 1 = problems
+Usage: python3 pbxproj_check.py <repo>      exit 0 = consistent, 1 = problems, 3 = not verifiable here
 """
 import re
 import sys
@@ -100,6 +100,7 @@ def resolve(objs, root_id, base):
 def main():
     repo = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     problems = 0
+    unverified = 0
     projects = sorted(repo.glob("**/*.xcodeproj"))
     if not projects:
         print("no .xcodeproj found")
@@ -111,7 +112,9 @@ def main():
         base = proj.parent
         text = pbx.read_text(encoding="utf-8", errors="replace")
         if "PBXFileSystemSynchronizedRootGroup" in text:
-            print(f"{proj.name}: uses synchronized folders — follows the disk, nothing to compare")
+            print(f"{proj.name}: NOT VERIFIED — uses synchronized folders (objectVersion ≥ 77), the project follows the disk; "
+                  f"only `xcodebuild` on macOS can prove it still builds")
+            unverified += 1
             continue
         objs = parse_objects(text)
         root = re.search(r'"?mainGroup"? = "?([0-9A-F]{24})"?;', text)
@@ -147,6 +150,9 @@ def main():
     if problems:
         print(f"{problems} problem(s)")
         sys.exit(1)
+    if unverified:
+        print(f"{unverified} project(s) could not be verified here")
+        sys.exit(3)  # exit 3 = "not verifiable", distinct from pass (0) and failure (1)
     print("project file and disk are consistent")
 
 
