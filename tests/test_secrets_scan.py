@@ -102,6 +102,12 @@ class SecretsScan(unittest.TestCase):
         code, out = run_script("secrets_scan.py", r, "--verify", r / "docs")
         self.assertIn("value from a.php:2", out)
 
+    def test_print_r_dump_is_scanned(self):
+        r = make_repo({"include/class/log.txt": "Array\n(\n    [wifi_password:protected] => Ab3dE6gH9k\n    [name] => Array\n)\n"})
+        code, out = run_script("secrets_scan.py", r)
+        self.assertIn("include/class/log.txt:3 wifi_password = <redacted> [high]", out)
+        self.assertNotIn("Ab3dE6gH9k", out)
+
     def test_plan_tags_moved_files(self):
         r = self.repo()
         write(r, {"plan.md": "| From | To | Note |\n|---|---|---|\n| config.php | conf/config.php | |\n"})

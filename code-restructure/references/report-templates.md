@@ -60,6 +60,12 @@ These are the moves that can break silently. One row per item.>
 - **Why it matters:** …
 - **Suggested direction:** …
 
+## Committed secrets (locations only)
+<From `secrets_scan.py` and from reading the config and install files it cannot cover (values under
+6 characters, passphrases with spaces). One line each: `file:line NAME = <redacted>`, with "[moved]" or
+"[git-ignored, not committed]" when the scanner says so. Never the value. "none found by the scan;
+files read by hand: …" if empty.>
+
 ## Dead-code candidates (not removed)
 <Files or symbols with no static reference found. Listed for the user; this skill
 never deletes them.>

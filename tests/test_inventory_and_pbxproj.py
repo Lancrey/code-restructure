@@ -20,6 +20,11 @@ class Inventory(unittest.TestCase):
         self.assertEqual(data["test_files"], ["tests/test_a.py"])
         self.assertNotIn(".DS_Store", data["tree"]["root_files"])
 
+    def test_tests_inside_plugin_folders_are_flagged(self):
+        r = make_repo({"public/js/plugins/x/test/test_a.js": "", "tests/test_b.py": ""})
+        code, out = run_script("inventory.py", r, "--out", r / "inv.json")
+        self.assertIn("1 of them inside plugin/vendor/lib folders", out)
+
     def test_build_dir_excluded_only_at_root(self):
         r = make_repo({"internal/build/b.go": "x\n", "dist/x.js": "y\n"})
         run_script("inventory.py", r, "--out", r / "ev/inv.json")  # new directory created on the fly

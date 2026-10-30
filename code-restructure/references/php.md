@@ -60,16 +60,21 @@ Leave in place: `bootstrap/`, `config/`, `database/`, `public/`, `resources/`, `
 ## Legacy PHP without Composer, tests or a database here
 Common case for this skill: an application written for PHP 5.x (mcrypt, `each()`, `$s{0}` string offsets),
 no `composer.json`, no tests, entry points that need MySQL. The floor is built from what can run:
-- **Syntax**: `baseline.py` runs `php -l` on every `.php` file and reports `N passed, M failed`; files that
-  fail only because of the PHP version (string offsets with braces, `each()`) fail identically before and
-  after, which is fine as long as the count does not rise.
+- **Syntax**: `baseline.py` runs `php -l` on every `.php` file and reports `N passed, M failed`. Files that
+  fail only because of the PHP version (`$s{0}` string offsets are a PARSE error in PHP 8) fail identically
+  before and after, which is fine for the syntax count — but such a file cannot be loaded at all, so a
+  library containing it cannot be exercised until the temporary copy is rewritten (next point).
 - **Version gaps**: never edit the repository to make it run on the local PHP. Put shims OUTSIDE the
   repo and apply them to a temporary copy of the tree: constants for removed extensions
-  (`MCRYPT_RIJNDAEL_256`), polyfills (`each`), a dummy config file, a SQLite or in-memory stand-in for the
-  database class. List every shim in the validation report under "Not verified": what it replaces is
+  (`MCRYPT_RIJNDAEL_256`), polyfills (`each`), a dummy config file, and syntax rewrites the runtime cannot
+  polyfill (`$s{0}` → `$s[0]`, done with PHP's own tokenizer on the copy, never with sed on the repo). For
+  the database, a stand-in class that replaces the application's DB wrapper and returns canned rows is
+  usually simpler than SQLite: legacy code issues MySQL-only statements (`SET time_zone`,
+  `PDO::MYSQL_ATTR_INIT_COMMAND`) and expects reference rows (time zones, settings) to exist. List every shim in the validation report under "Not verified": what it replaces is
   exactly what was not exercised.
 - **Runtime floor**: one PHP process per check, printing `N passed, M failed` at the end: load the config
-  and bootstrap, autoload every class (`class_exists` over the classes directory), instantiate each
+  and bootstrap, autoload every class (`class_exists` over the classes directory — one child process per
+  class, or one that restarts after a fatal: a single PHP 8 signature error kills the whole process), instantiate each
   module, render one or two real templates through the template engine, run each moved library once
   (write and read a file with the spreadsheet library, compile a stylesheet with the LESS compiler…),
   start each CLI entry point with no arguments. Pass the script to `gate.py` with `--extra`.

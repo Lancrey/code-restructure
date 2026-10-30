@@ -49,6 +49,18 @@ class Regressions(unittest.TestCase):
         self.assertEqual(regs, ["go-list"])
 
 
+class ExtraCommands(unittest.TestCase):
+    def test_changed_command_under_same_id_is_flagged(self):
+        rows, regs = baseline.compare({"checks": [{"id": "extra-1", "cmd": "a.sh", "status": "pass", "counters": {}}]},
+                                      {"checks": [{"id": "extra-1", "cmd": "b.sh", "status": "pass", "counters": {}}]})
+        self.assertEqual(regs, ["extra-1"])
+        self.assertEqual(rows[0][-1], "COMMAND CHANGED")
+
+    def test_extra_counters_take_the_last_summary(self):
+        out = "step A: 3 passed\nstep B: 5 passed\n11 passed, 0 failed\n"
+        self.assertEqual(baseline.parse_counters("extra-1", out)["passed"], 11)
+
+
 class Counters(unittest.TestCase):
     def test_pytest_and_extra(self):
         self.assertEqual(baseline.parse_counters("pytest", "40 passed, 41 skipped in 0.3s"), {"passed": 40, "skipped": 41})

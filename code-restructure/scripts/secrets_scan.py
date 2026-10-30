@@ -31,7 +31,8 @@ not in the repository's history, but they are on disk and can be pasted into a r
 --no-ignored turns this off. --strict with --verify also checks plain-word low-confidence
 values ("sunshine"), at the cost of false alarms on ordinary words.
 
-Known blind spot: a value containing whitespace (PASSWORD = "correct horse battery") is treated
+Known blind spots: values shorter than 6 characters (a 5-letter default password in an install
+note) are not detected, by design — below that length every word matches; and a value containing whitespace (PASSWORD = "correct horse battery") is treated
 as prose and never detected, not even with --strict — treating every quoted sentence as a secret
 would drown the result. Passphrases with spaces must be found by reading the config files the
 audit lists.
@@ -72,6 +73,8 @@ ASSIGN = re.compile(
 # YAML / unquoted mapping value:  MYSQL_ROOT_PASSWORD: s3cr3t   (also "- KEY=value" list items in compose files)
 YAML_KV = re.compile(r"""^\s*-?\s*["']?(?P<name>%s)["']?\s*[:=]\s*(?P<val>[^\s"'#\[\{][^\s#]{5,})\s*(?:#.*)?$""" % NAME_RX, re.I)
 DOTENV = re.compile(r"^\s*(?:export\s+)?(?P<name>[A-Z][A-Z0-9_]*(?:%s)[A-Z0-9_]*)\s*=\s*(?P<val>[^\s'\"#][^\s#]{5,})\s*$" % NAME_WORDS.upper())
+# print_r / var_dump / var_export dumps committed by mistake: [wifi_password:protected] => abc123def4
+DUMP_KV = re.compile(r"""\[["']?(?P<name>%s)(?::(?:protected|private))?["']?\]\s*=>\s*(?:string\(\d+\)\s*)?["']?(?P<val>[^\s"']{6,})""" % NAME_RX, re.I)
 URL_CRED = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^/\s:@'\"]+:(?P<val>[^@\s/'\"]{3,})@")
 TOKEN_FORMATS = [
     ("aws-access-key-id", re.compile(r"\b(AKIA[0-9A-Z]{16})\b")),
@@ -220,6 +223,13 @@ def scan_file(path, rel):
                 if c:
                     hits.append((rel, ln, m.group("name"), m.group("val"), c))
                     seen.add(m.group("val"))
+        for m in DUMP_KV.finditer(line):
+            val = m.group("val")
+            if val not in seen and not PLACEHOLDER.match(val) and val not in ("Array", "Object", "NULL"):
+                c = confidence(val)
+                if c:
+                    hits.append((rel, ln, m.group("name"), val, c))
+                    seen.add(val)
         for m in URL_CRED.finditer(line):
             val = m.group("val")
             if val not in seen and not PLACEHOLDER.match(val) and not val.startswith(("$", "{", "<", "%")) \

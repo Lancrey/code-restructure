@@ -35,14 +35,21 @@ class Gate(unittest.TestCase):
         code, out = run_script("gate.py", r, "--plan", "docs/architecture-migration-plan.md", "--report-dir", "docs",
                                "--record-before", "--only", "extra-1", "--extra", "false")
         self.assertIn("UNVERIFIED", out)
+        self.assertIn("Before-state recorded", out)
 
     def test_final_strict_is_a_review_not_a_failure(self):
         r = make_repo({**REPO, "conf.py": 'key = "playlist"\n'})
         run_script("gate.py", r, *ARGS, "--record-before")
-        write(r, {"docs/architecture-audit.md": "# audit\nthe playlist module\n"})
+        (r / "demo/core").mkdir()
+        git(r, "mv", "demo/utils.py", "demo/core/text.py")
+        write(r, {"demo/core/__init__.py": "", "tests/test_a.py": REPO["tests/test_a.py"].replace("demo.utils", "demo.core.text"),
+                  "docs/architecture-audit.md": "# audit\nthe playlist module\n"})
         code, out = run_script("gate.py", r, *ARGS, "--final")
         self.assertIn("REVIEW", out)
-        self.assertNotIn("FAIL       secrets", out)
+        self.assertNotIn("FAIL", out)  # neither the summary nor the per-check line says FAIL
+        self.assertNotIn("All gates passed", out)
+        self.assertIn("needs a human review", out)
+        self.assertEqual(code, 0, out)
 
     def test_step_without_before_is_refused(self):
         r = make_repo(REPO)

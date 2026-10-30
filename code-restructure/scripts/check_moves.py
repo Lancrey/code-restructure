@@ -559,8 +559,10 @@ def main():
                 # a path relative to a base constant starts the string: CONST . 'phpexcel/x.php', "../smarty/";
                 # '/smarty/config' after another folder variable is some other smarty/ directory
                 pre = line[max(0, m.start() - 3):m.start()]
-                if not (pre.endswith(("'", '"', "`")) or pre.endswith("./")):
-                    continue
+                file_relative = pre.endswith(("'/", '"/')) and re.search(
+                    r"(__DIR__|dirname\(\s*__FILE__\s*\)|__dirname|path\.dirname\([^)]*\))\s*[.+,]\s*$", line[:m.start() - 2])
+                if not (pre.endswith(("'", '"', "`")) or pre.endswith("./") or file_relative):
+                    continue  # '/smarty/config' after another folder variable: a different smarty/ directory
             if tok == bare_name(frm):
                 ext_r = os.path.splitext(rel)[1].lower()
                 if ext_r in (".md", ".mdx", ".rst", ".txt", ".html"):

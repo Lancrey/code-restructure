@@ -182,6 +182,16 @@ class CheckMoves(unittest.TestCase):
         code, out = run_script("check_moves.py", r, *args, "--allow", "include/bootstrap.php:4")
         self.assertEqual(code, 0, out)
 
+    def test_file_relative_dir_reference_is_caught(self):
+        r = make_repo({"include/phpexcel/PHPExcel.php": "",
+                       "include/bootstrap.php": "<?php\nrequire dirname(__FILE__) . '/phpexcel/PHPExcel.php';\nrequire __DIR__ . '/phpexcel/PHPExcel.php';\n$x = $incdir . '/phpexcel/tmp';\n"})
+        moved(r, "include/phpexcel", "include/lib/phpexcel")
+        code, out = run_script("check_moves.py", r, "--moves", "include/phpexcel=include/lib/phpexcel", "--no-imports")
+        self.assertEqual(code, 1, out)
+        self.assertIn("L2", out)
+        self.assertIn("L3", out)
+        self.assertNotIn("L4", out)
+
     def test_nested_vendor_without_manifest_is_source(self):
         r = make_repo({"old/one.py": "", "development/vendor/tool/x.js": "// old/one.py\n", "vendor/dep/y.js": "// old/one.py\n"})
         moved(r, "old/one.py", "new/one.py")

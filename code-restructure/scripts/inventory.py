@@ -329,6 +329,8 @@ def main():
         )
     )
 
+    vendored_like = {"plugins", "plugin", "vendor", "third_party", "thirdparty", "external", "libs", "lib", "bower_components", "polyfills"}
+    test_files_vendored = [t for t in test_files if any(p.lower() in vendored_like for p in Path(t).parts[:-1])]
     code_langs = [(l, n) for l, n in lang_files.most_common() if l in CODE_LANGS]
     tree = build_tree(files, args.depth)
     big_dirs = sorted(tree["dirs"].items(), key=lambda kv: -kv[1]["code_files"])[:15]
@@ -348,6 +350,7 @@ def main():
         "probable_entry_files": entry_files,
         "test_files": test_files,
         "test_file_count": len(test_files),
+        "test_files_in_vendored_like_dirs": test_files_vendored,
         "tree": tree,
     }
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
@@ -358,7 +361,8 @@ def main():
     print("Code languages (files / lines):")
     for lang, n in code_langs[:6]:
         print(f"  {lang:<14} {n:>6} / {lang_lines[lang]:>8}")
-    print(f"Test files: {len(test_files)}")
+    print(f"Test files: {len(test_files)}" + (f" — {len(test_files_vendored)} of them inside plugin/vendor/lib folders, "
+          f"probably not the project's own tests" if test_files_vendored else ""))
     print("Path-pinning files:")
     for kind, lst in pinning.items():
         print(f"  {kind:<17} {len(lst):>3}  " + ", ".join(lst[:6]) + (" …" if len(lst) > 6 else ""))

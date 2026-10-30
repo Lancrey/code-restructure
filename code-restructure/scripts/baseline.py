@@ -251,13 +251,11 @@ def parse_counters(cid, output):
         if name in ("ok_packages", "failed_packages"):
             counters[name] = len(re.findall(pattern, output, re.M))
             continue
-        total = 0
-        found = False
-        for m in re.finditer(pattern, output, re.M):
-            found = True
-            total += int(m.group(m.lastindex or 1))
+        found = [int(m.group(m.lastindex or 1)) for m in re.finditer(pattern, output, re.M)]
         if found:
-            counters[name] = total
+            # runners that print one summary per package (cargo, go) are summed; a custom --extra script
+            # prints its summary last, and earlier "N passed" lines are progress, so its last value counts
+            counters[name] = found[-1] if cid.startswith("extra") else sum(found)
     return counters
 
 
@@ -317,6 +315,11 @@ def compare(before, after):
         kb = cb.get("counters", {}) if cb else {}
         ka = ca.get("counters", {}) if ca else {}
         verdict = "same"
+        if cb is not None and ca is not None and cb.get("cmd") != ca.get("cmd"):
+            verdict = "REGRESSION"  # same id, different command (e.g. --extra arguments reordered): not comparable
+            regressions.append(cid)
+            rows.append((cid, sb, "cmd: " + str(cb.get("cmd"))[:40], sa, "cmd: " + str(ca.get("cmd"))[:40], "COMMAND CHANGED"))
+            continue
         if cb is None:
             verdict = "NEW-not-comparable"
         elif ca is None:

@@ -25,15 +25,19 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+LAST_OUTPUT = [""]
 
 
-def run(label, cmd, ok_codes=(0,), unverified_codes=()):
+def run(label, cmd, ok_codes=(0,), unverified_codes=(), review_codes=()):
     print(f"\n=== {label}\n$ {shlex.join(str(c) for c in cmd)}", flush=True)
     r = subprocess.run([sys.executable, *cmd], capture_output=True, text=True)
     out = (r.stdout + r.stderr).strip()
+    LAST_OUTPUT[0] = out
     if out:
         print(out)
-    if r.returncode in ok_codes:
+    if r.returncode in review_codes:
+        verdict = "REVIEW"
+    elif r.returncode in ok_codes:
         verdict = "PASS"
     elif r.returncode in unverified_codes:
         verdict = "UNVERIFIED"
@@ -83,6 +87,10 @@ def main():
                 verdicts["baseline before"] = "UNVERIFIED"
             elif not green:
                 print(f"\nnote: no check passes before the migration; regressions will be judged on the counters of {', '.join(counted)} only.")
+            blind = [c["id"] for c in checks if c["status"] != "pass" and not c.get("counters")]
+            if blind:
+                print(f"\nnote: {', '.join(blind)} already fail(s) and print(s) no counts: before/after can only say 'still failing', "
+                      "so they protect nothing. Rely on the other checks, or replace them with a floor that prints 'N passed, M failed'.")
         except (OSError, ValueError, KeyError):
             pass
         verdicts["references before"] = run("references before (what is already unresolved)",
@@ -109,8 +117,9 @@ def main():
         if args.final:
             # strict mode also checks plain-word values ("playlist", "layout"): it cannot be green on a real repo,
             # so it is a list to REVIEW by hand, recorded in the validation report — not a gate
-            v = run("strict secrets check, plain-word values included (review by hand)", sv + ["--strict"])
-            verdicts["secrets strict (review)"] = "PASS" if v == "PASS" else "REVIEW"
+            # exit 1 here means "there is a list to read", not a failed gate
+            verdicts["secrets strict (review)"] = run("strict secrets check, plain-word values included (review by hand)",
+                                                      sv + ["--strict"], review_codes=(1,))
         if any(repo.glob("*.xcodeproj")):
             verdicts["xcode"] = run("Xcode project file vs disk", [HERE / "pbxproj_check.py", repo], unverified_codes=(3,))
 
@@ -122,9 +131,13 @@ def main():
         sys.exit(1)
     if "UNVERIFIED" in verdicts.values():
         print("\nSome gate could not verify anything here: list it under 'Not verified' in the validation report.")
+    if args.record_before:
+        print("\nBefore-state recorded (failing checks are recorded as they are; they are compared, not judged, from now on).")
+        return
     if "REVIEW" in verdicts.values():
-        print("\nThe strict secrets list needs a human review: check each listed value (shown by name and source line) and record\n"
-              "the outcome in the validation report; any real secret found there must be removed from the reports and evidence.")
+        print("\nGates passed; one list still needs a human review: check each strict-secrets entry (name and source line are\n"
+              "printed) and record the outcome in the validation report — a real secret there must be removed before committing.")
+        return
     print("\nAll gates passed (evidence, not proof).")
 
 
