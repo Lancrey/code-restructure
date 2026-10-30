@@ -1,6 +1,6 @@
 # Code Restructure
 
-A Claude skill (`/restructure`) for architecture audits and safe structural refactoring of an existing Git repository, with behaviour left unchanged.
+A Claude skill (`/restructure`) and/or ChatGPT/Codex plugin for architecture audits and safe structural refactoring of an existing Git repository, with behaviour left unchanged.
 
 ## Modes
 
