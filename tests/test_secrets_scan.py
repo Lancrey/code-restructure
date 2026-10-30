@@ -33,6 +33,27 @@ class SecretsScan(unittest.TestCase):
         self.assertIn("docs/audit.md:1", out)
         self.assertNotIn("dj4ng0", out)
 
+    def test_short_symbol_password_camelcase_and_yaml_are_found_and_verified(self):
+        r = make_repo({
+            "settings.py": 'ADMIN_PASSWORD = "@+ka6_9"\npasswordHash = "5f4dcc3b5aa765d61d8327deb882cf99"\n'
+                           'TOKEN_URL = "https://auth.example.com/oauth/token"\nkeyboard = "azerty-layout"\n',
+            "docker-compose.yml": "services:\n  db:\n    environment:\n      MYSQL_ROOT_PASSWORD: s3cr3tP4ssw0rd!\n      - DB_PASSWORD=listStyle99\n      OTHER: ${SECRET}\n",
+            "docs/a.md": "clean\n",
+        })
+        code, out = run_script("secrets_scan.py", r)
+        for name in ("ADMIN_PASSWORD", "passwordHash", "MYSQL_ROOT_PASSWORD", "DB_PASSWORD"):
+            self.assertIn(name + " = <redacted> [high]", out)
+        self.assertNotIn("TOKEN_URL = <redacted> [high]", out)
+        self.assertNotIn("keyboard", out)
+        self.assertNotIn("OTHER", out)
+        write(r, {"probe.php": '<?php $key = "$file:$line";\n'})
+        code, out = run_script("secrets_scan.py", r, "--all")
+        self.assertNotIn("probe.php", out)
+        write(r, {"docs/leak.md": "admin is @+ka6_9, hash 5f4dcc3b5aa765d61d8327deb882cf99, root s3cr3tP4ssw0rd!\n"})
+        code, out = run_script("secrets_scan.py", r, "--verify", r / "docs")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(out.count("docs/leak.md:1"), 3, out)
+
     def test_plan_tags_moved_files(self):
         r = self.repo()
         write(r, {"plan.md": "| From | To | Note |\n|---|---|---|\n| config.php | conf/config.php | |\n"})

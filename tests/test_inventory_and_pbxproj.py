@@ -13,6 +13,21 @@ class Inventory(unittest.TestCase):
         self.assertNotIn("node_modules", json.dumps(data["tree"]))
 
 
+    def test_test_files_need_a_test_dir_or_name_and_dsstore_is_ignored(self):
+        r = make_repo({"src/testimonials.py": "x=1\n", "tests/test_a.py": "x=1\n", "src/latest_spec.py": "x=1\n", ".DS_Store": "junk"})
+        run_script("inventory.py", r, "--out", r / "inv.json")
+        data = json.loads((r / "inv.json").read_text())
+        self.assertEqual(data["test_files"], ["tests/test_a.py"])
+        self.assertNotIn(".DS_Store", data["tree"]["root_files"])
+
+    def test_build_dir_excluded_only_at_root(self):
+        r = make_repo({"internal/build/b.go": "x\n", "dist/x.js": "y\n"})
+        run_script("inventory.py", r, "--out", r / "inv.json")
+        data = json.loads((r / "inv.json").read_text())
+        self.assertEqual(data["excluded_dirs"], ["dist"])
+        self.assertEqual(data["file_count"], 1)
+
+
 PBX = """// !$*UTF8*$!
 {
 \tobjects = {
@@ -53,6 +68,18 @@ class Pbxproj(unittest.TestCase):
         code, out = run_script("pbxproj_check.py", self.repo(with_file=False))
         self.assertEqual(code, 1, out)
         self.assertIn("MISSING", out)
+
+    def test_space_indented_project_is_parsed(self):
+        r = make_repo({"App.xcodeproj/project.pbxproj": PBX.replace("\t", "    ")})
+        code, out = run_script("pbxproj_check.py", r)
+        self.assertEqual(code, 1, out)
+        self.assertIn("MISSING", out)
+
+    def test_unparseable_project_is_a_problem_not_a_pass(self):
+        r = make_repo({"App.xcodeproj/project.pbxproj": "// garbage\n{ objects = { }; mainGroup = CCCCCCCCCCCCCCCCCCCCCCC3; }\n"})
+        code, out = run_script("pbxproj_check.py", r)
+        self.assertEqual(code, 1, out)
+        self.assertIn("0 file references", out)
 
     def test_unreferenced_file_detected(self):
         r = self.repo()

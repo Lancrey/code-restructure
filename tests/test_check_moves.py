@@ -72,6 +72,43 @@ class CheckMoves(unittest.TestCase):
         data = json.loads((r / "hits.json").read_text())
         self.assertEqual(len([h for h in data["stale"] if h["file"] == "run.sh"]), 2)
 
+    def test_substring_of_another_path_is_not_a_hit(self):
+        r = make_repo({"app/db.py": "", "app/settings.py": "DATABASE = 'sqlite:///myapp.db'\nX = 'app/db_v2'\n"})
+        moved(r, "app/db.py", "app/data/db.py")
+        code, out = run_script("check_moves.py", r, "--moves", "app/db.py=app/data/db.py", "--no-imports")
+        self.assertEqual(code, 0, out)
+
+    def test_reports_at_repo_root_are_allowlisted(self):
+        r = make_repo({"app/db.py": "", "architecture-audit.md": "app/db.py was here\n",
+                       "restructure-evidence/notes.txt": "app/db.py\n"})
+        moved(r, "app/db.py", "app/data/db.py")
+        code, out = run_script("check_moves.py", r, "--moves", "app/db.py=app/data/db.py", "--no-imports")
+        self.assertEqual(code, 0, out)
+
+    def test_relocation_table_checked_against_disk(self):
+        r = make_repo({"app/keep.py": "", "app/db.py": ""})
+        moved(r, "app/db.py", "app/data/db.py")
+        code, out = run_script("check_moves.py", r, "--moves", "app/db.py=app/data/db.py",
+                               "--moves", "app/keep.py=app/data/keep.py", "--moves", "app/gone.py=app/data/x.py", "--no-imports")
+        self.assertEqual(code, 1, out)
+        self.assertIn("From still exists on disk: app/keep.py", out)
+        self.assertIn("To does not exist on disk: app/data/keep.py", out)
+        self.assertIn("To does not exist on disk: app/data/x.py", out)
+
+    def test_shim_left_in_place_is_fine_when_allowed(self):
+        r = make_repo({"app/db.py": "# shim\n"})
+        write(r, {"app/data/db.py": ""})
+        code, out = run_script("check_moves.py", r, "--moves", "app/db.py=app/data/db.py", "--allow", "app/db.py", "--no-imports")
+        self.assertEqual(code, 0, out)
+
+    def test_nested_build_dir_is_scanned(self):
+        r = make_repo({"old/one.py": "", "internal/build/ref.go": "// old/one.py\n", "dist/x.js": "// old/one.py\n"})
+        moved(r, "old/one.py", "new/one.py")
+        code, out = run_script("check_moves.py", r, "--moves", "old/one.py=new/one.py", "--no-imports")
+        self.assertEqual(code, 1, out)
+        self.assertIn("internal/build/ref.go", out)
+        self.assertNotIn("dist/x.js", out)
+
     def test_no_imports_flag_skips_resolution(self):
         r = make_repo({"src/a/x.ts": "import { y } from './y';\n", "src/a/y.ts": ""})
         moved(r, "src/a/x.ts", "src/b/x.ts")
@@ -79,7 +116,7 @@ class CheckMoves(unittest.TestCase):
         self.assertEqual(code, 0, out)
 
     def test_ts_esm_js_specifier_resolves_to_ts_file(self):
-        r = make_repo({"src/a.ts": "import { b } from './b.js';\n", "src/b.ts": "export const b = 1;\n"})
+        r = make_repo({"src/a.ts": "import { b } from './b.js';\n", "src/b.ts": "export const b = 1;\n", "zzz/other.py": ""})
         code, out = run_script("check_moves.py", r, "--moves", "zzz/none.py=zzz/other.py")
         self.assertEqual(code, 0, out)
 

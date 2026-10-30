@@ -40,9 +40,16 @@ from pathlib import Path
 
 EXCLUDE_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "venv", "__pycache__",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "dist", "build", "out", "target",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
     ".next", ".nuxt", ".turbo", ".cache", "coverage", ".idea", ".gradle", "Pods",
 }
+# build outputs: excluded only at the repository root (a Go package `internal/build/` is source)
+TOP_LEVEL_EXCLUDE = {"dist", "build", "out", "target"}
+
+
+def excluded(rel_parts):
+    dirs = rel_parts[:-1]
+    return any(p in EXCLUDE_DIRS for p in dirs) or (bool(dirs) and dirs[0] in TOP_LEVEL_EXCLUDE)
 BINARY_EXT = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz", ".tar", ".jar",
     ".class", ".pyc", ".so", ".dylib", ".dll", ".exe", ".woff", ".woff2", ".ttf", ".otf",
@@ -185,13 +192,13 @@ def iter_files(repo: Path):
             capture_output=True, text=True, check=True, timeout=120,
         ).stdout
         for rel in out.split("\0"):
-            if rel and not any(part in EXCLUDE_DIRS for part in Path(rel).parts[:-1]):
+            if rel and not excluded(Path(rel).parts):
                 yield rel
         return
     except Exception:
         pass
     for root, dirs, names in os.walk(repo):
-        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not (Path(root) == repo and d in TOP_LEVEL_EXCLUDE)]
         for n in names:
             yield os.path.relpath(os.path.join(root, n), repo)
 
@@ -235,7 +242,9 @@ def main():
             plan_rel = None
     allow = list(args.allow)
     # the plan itself and the other architecture reports legitimately mention old paths
-    allow += ["docs/architecture-*.md", "*/architecture-audit.md", "*/architecture-migration-plan.md", "*/architecture-validation.md", "*/restructure-evidence/*"]
+    for name in ("architecture-audit.md", "architecture-migration-plan.md", "architecture-validation.md"):
+        allow += [name, "*/" + name]
+    allow += ["restructure-evidence/*", "*/restructure-evidence/*"]
     if plan_rel:
         allow.append(plan_rel)
 
@@ -270,6 +279,13 @@ def main():
         for ln, line, m in ((ln, line, m) for ln, line in enumerate(text.splitlines(), 1) for m in pattern.finditer(line)):
             tok = m.group(0)
             frm, to, new_forms = token_map[tok]
+            # word boundaries: "app.db" inside "myapp.db" or "app/utils" inside "app/utils_v2" is another path
+            before = line[m.start() - 1] if m.start() > 0 else ""
+            after = line[m.end()] if m.end() < len(line) else ""
+            if (tok[0].isalnum() or tok[0] == "_") and (before.isalnum() or before == "_"):
+                continue
+            if (tok[-1].isalnum() or tok[-1] == "_") and (after.isalnum() or after == "_"):
+                continue
             if tok == bare_name(frm):
                 ext_r = os.path.splitext(rel)[1].lower()
                 if ext_r in (".md", ".mdx", ".rst", ".txt", ".html"):
@@ -286,6 +302,18 @@ def main():
                     continue
             hits.append({"file": rel, "line": ln, "token": tok, "from": frm, "to": to, "text": line.strip()[:200]})
 
+    # relocation table vs disk: after the migration every From must be gone (unless it is a shim
+    # listed with --allow) and every To must exist
+    table_problems = []
+    for frm, to, _ in moves:
+        f, t = frm.strip().rstrip("/"), to.strip().rstrip("/")
+        if f == t or any(ch in f for ch in "*?[]"):
+            continue
+        if (repo / f).exists() and not any(fnmatch.fnmatch(f, a) or f == a for a in allow):
+            table_problems.append(f"From still exists on disk: {f}  (move not done, or an unlisted shim: add --allow {f})")
+        if not any(ch in t for ch in "*?[]<>") and not (repo / t).exists():
+            table_problems.append(f"To does not exist on disk: {t}  (from {f})")
+
     broken = []
     if not args.no_imports:
         moved_hint = {}
@@ -297,8 +325,14 @@ def main():
         broken = unresolved_relative_imports(repo, files, moved_hint)
 
     if args.json:
-        Path(args.json).write_text(json.dumps({"stale": hits, "unresolved_relative_imports": [
+        Path(args.json).write_text(json.dumps({"stale": hits, "relocation_table": table_problems, "unresolved_relative_imports": [
             {"file": f, "line": l, "spec": s_, "moved_to": h} for f, l, s_, h in broken]}, indent=2), encoding="utf-8")
+
+    if table_problems:
+        print(f"{len(table_problems)} relocation-table row(s) disagree with the disk:")
+        for t in table_problems:
+            print(f"  {t}")
+        print()
 
     def report_broken():
         if not broken:
@@ -323,7 +357,7 @@ def main():
         else:
             print("nothing to check in the relocation table")
         report_broken()
-        if broken:
+        if broken or table_problems:
             sys.exit(1)
         return
     by_file = {}

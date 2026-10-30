@@ -34,11 +34,28 @@ class Compare(unittest.TestCase):
         self.assertEqual(regs, [])
 
 
+class Regressions(unittest.TestCase):
+    def test_more_lint_findings_is_regression(self):
+        rows, regs = baseline.compare({"checks": [{"id": "ruff", "status": "fail", "counters": {"findings": 10}}]},
+                                      {"checks": [{"id": "ruff", "status": "fail", "counters": {"findings": 12}}]})
+        self.assertEqual(regs, ["ruff"])
+
+    def test_flake8_lines_are_findings_not_successes(self):
+        rows, regs = baseline.compare({"checks": [{"id": "flake8", "status": "fail", "counters": {"lines": 3}}]},
+                                      {"checks": [{"id": "flake8", "status": "fail", "counters": {"lines": 5}}]})
+        self.assertEqual(regs, ["flake8"])
+        rows, regs = baseline.compare({"checks": [{"id": "go-list", "status": "pass", "counters": {"lines": 5}}]},
+                                      {"checks": [{"id": "go-list", "status": "pass", "counters": {"lines": 3}}]})
+        self.assertEqual(regs, ["go-list"])
+
+
 class Counters(unittest.TestCase):
     def test_pytest_and_extra(self):
         self.assertEqual(baseline.parse_counters("pytest", "40 passed, 41 skipped in 0.3s"), {"passed": 40, "skipped": 41})
         self.assertEqual(baseline.parse_counters("extra-1", "12 passed, 3 skipped in 1s"), {"passed": 12, "skipped": 3})
         self.assertEqual(baseline.parse_counters("pytest-collect", "81 tests collected in 0.1s"), {"collected": 81})
+        self.assertEqual(baseline.parse_counters("ruff", "Found 123 errors.\n"), {"findings": 123})
+        self.assertEqual(baseline.parse_counters("npm:lint", "✖ 7 problems (2 errors, 5 warnings)"), {"findings": 7})
 
 
 class Detect(unittest.TestCase):
@@ -46,6 +63,15 @@ class Detect(unittest.TestCase):
         r = make_repo({"setup.py": "", "test_x.py": "def test_a(): pass\n", "pkg/__init__.py": ""})
         ids = [c["id"] for c in baseline.detect_checks(r)]
         self.assertIn("pytest", ids)
+
+    def test_pytest_detected_without_any_manifest(self):
+        r = make_repo({"test_x.py": "def test_a(): pass\n"})
+        self.assertIn("pytest", [c["id"] for c in baseline.detect_checks(r)])
+
+    def test_pytest_command_has_no_fail_fast(self):
+        r = make_repo({"test_x.py": "def test_a(): pass\n"})
+        cmd = [c["cmd"] for c in baseline.detect_checks(r) if c["id"] == "pytest"][0]
+        self.assertNotIn(" -x", cmd)
 
     def test_pytest_detected_from_tox_ini(self):
         r = make_repo({"tox.ini": "[testenv]\ncommands = pytest\n", "setup.py": ""})
@@ -62,6 +88,29 @@ class EndToEnd(unittest.TestCase):
                                "--compare", r / "before.json")
         self.assertEqual(code, 2, out)
         self.assertIn("REGRESSION", out)
+
+    def test_new_failure_in_moved_test_file_is_a_regression(self):
+        # with -x this used to be masked: the run stopped at the pre-existing failure in test_beta
+        r = make_repo({"setup.cfg": "", "test_alpha.py": "def test_a(): pass\ndef test_b(): pass\n",
+                       "test_beta.py": "def test_c(): assert False\n", "test_gamma.py": "def test_d(): pass\ndef test_e(): pass\n"})
+        code, _ = run_script("baseline.py", r, "--only", "pytest", "--out", r / "before.json")
+        from helpers import git
+        (r / "tests").mkdir()
+        git(r, "mv", "test_gamma.py", "tests/test_gamma.py")
+        write(r, {"tests/test_gamma.py": "def test_d(): assert False\ndef test_e(): pass\n"})
+        code, out = run_script("baseline.py", r, "--only", "pytest", "--out", r / "after.json", "--compare", r / "before.json")
+        self.assertEqual(code, 2, out)
+
+    def test_missing_compare_file_is_an_error(self):
+        r = make_repo({"marker": "x\n"})
+        code, out = run_script("baseline.py", r, "--only", "extra-1", "--extra", "true", "--out", r / "a.json", "--compare", r / "nope.json")
+        self.assertEqual(code, 2, out)
+        self.assertNotIn("No regressions", out)
+
+    def test_no_check_at_all_is_an_error(self):
+        r = make_repo({"marker": "x\n"})
+        code, out = run_script("baseline.py", r, "--only", "nothing", "--extra", "true", "--out", r / "a.json")
+        self.assertEqual(code, 2, out)
 
     def test_ref_runs_on_the_original_commit(self):
         r = make_repo({"marker": "x\n"})

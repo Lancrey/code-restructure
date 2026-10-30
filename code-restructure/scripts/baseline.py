@@ -16,7 +16,13 @@ Usage:
 Rules it follows:
   - never modifies the repository; everything runs from the repo root
   - a check that fails BEFORE the migration is recorded as pre-existing, not as a regression
-  - counters (test counts) are parsed from output where the runner's format is known
+  - counters (test counts, lint findings) are parsed from output where the runner's format is known
+  - with --compare: exit 2 on a regression, exit 2 if the "before" file is missing or no check ran
+
+Caveat for --ref: the checks run in a temporary git worktree, so anything installed from
+the working tree is NOT there — node_modules, a virtualenv, `pip install -e .` (an editable
+install keeps pointing at the working tree, so the worktree's tests may import the
+working tree's code). Prefer running the "before" baseline on the untouched working tree.
 """
 import argparse
 import json
@@ -65,15 +71,17 @@ def detect_checks(repo: Path):
         checks.append({"id": cid, "cmd": cmd, "kind": kind, "note": note})
 
     # ---------- Python ----------
-    if has(repo, "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini"):
+    py_tests = has(repo, "pytest.ini", "conftest.py") or find_test_files(repo)
+    if py_tests or has(repo, "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "tox.ini"):
         py = "python3" if which("python3") else "python"
         pyproject_txt = (repo / "pyproject.toml").read_text(errors="replace") if has(repo, "pyproject.toml") else ""
         cfg_txt = "".join((repo / n).read_text(errors="replace") for n in ("tox.ini", "setup.cfg", "requirements-dev.txt", "requirements.txt") if (repo / n).exists())
-        if has(repo, "pytest.ini", "conftest.py", "tests", "test") or "pytest" in pyproject_txt or "pytest" in cfg_txt \
-                or find_test_files(repo):
+        if py_tests or has(repo, "tests", "test") or "pytest" in pyproject_txt or "pytest" in cfg_txt:
             add("pytest-collect", f"{py} -m pytest --collect-only -q", "test-discovery",
                 "number of collected tests must not drop after the move")
-            add("pytest", f"{py} -m pytest -q -x --no-header -p no:cacheprovider", "test")
+            # no -x: stopping at the first failure makes the pass/fail counts depend on collection
+            # order, which changes when test files move, and hides new failures behind an old one
+            add("pytest", f"{py} -m pytest -q --no-header -p no:cacheprovider", "test")
         add("py-compile", f"{py} -m compileall -q .", "build")
         if which("ruff") or has(repo, "ruff.toml", ".ruff.toml"):
             add("ruff", "ruff check .", "lint")
@@ -189,6 +197,12 @@ COUNTERS = [
     ("pytest", r"(\d+) skipped", "skipped"),
     ("pytest-collect", r"(\d+) tests? collected", "collected"),
     ("pytest-collect", r"^(\d+) tests? collected", "collected"),
+    ("ruff", r"Found (\d+) errors?", "findings"),
+    ("flake8", None, "lines"),
+    ("npm:lint", r"(\d+) problems?", "findings"),
+    ("mypy", r"Found (\d+) errors?", "findings"),
+    ("phpstan", r"Found (\d+) errors?", "findings"),
+    ("cargo-clippy", r"warning: .* generated (\d+) warnings?", "findings"),
     ("npm:test", r"Tests:\s+.*?(\d+) passed", "passed"),
     ("npm:test", r"Tests:\s+(\d+) failed", "failed"),
     ("npm:test", r"Tests\s+(\d+) passed", "passed"),
@@ -273,9 +287,12 @@ def compare(before, after):
         elif sb != sa:
             verdict = "changed"
         for k in set(kb) | set(ka):
-            if k in ("collected", "passed", "lines", "ok_packages", "files_passed") and kb.get(k, 0) > ka.get(k, 0):
+            lines_is_findings = cid.startswith("flake8")
+            if k in ("collected", "passed", "ok_packages", "files_passed") and kb.get(k, 0) > ka.get(k, 0):
                 verdict = "REGRESSION"
-            if k in ("failed", "errors", "failed_packages") and ka.get(k, 0) > kb.get(k, 0):
+            if k == "lines" and (ka.get(k, 0) > kb.get(k, 0) if lines_is_findings else kb.get(k, 0) > ka.get(k, 0)):
+                verdict = "REGRESSION"
+            if k in ("failed", "errors", "failed_packages", "findings") and ka.get(k, 0) > kb.get(k, 0):
                 verdict = "REGRESSION"
             if k == "skipped" and k in kb and k in ka and ka[k] > kb[k]:
                 verdict = "REGRESSION"
@@ -338,6 +355,13 @@ def run(args, repo):
         if args.list or not args.out:
             return
 
+    if not checks:
+        print("no check to run: nothing was detected for this repo and no --extra command was given", file=sys.stderr)
+        sys.exit(2)
+    if args.compare and not Path(args.compare).is_file():
+        print(f"--compare file not found: {args.compare}", file=sys.stderr)
+        sys.exit(2)
+
     git_head = ""
     try:
         git_head = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -357,6 +381,9 @@ def run(args, repo):
 
     if args.compare:
         before = read_json(Path(args.compare))
+        if not before.get("checks"):
+            print(f"--compare file has no checks: {args.compare}", file=sys.stderr)
+            sys.exit(2)
         rows, regressions = compare(before, record)
         print("\nComparison (before → after):")
         print(f"  {'check':<20} {'before':<8} {'counters':<28} {'after':<8} {'counters':<28} verdict")

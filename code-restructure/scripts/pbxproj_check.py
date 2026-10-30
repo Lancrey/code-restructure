@@ -28,7 +28,14 @@ def parse_objects(text):
     by generators (every key and value in quotes).
     """
     objs = {}
-    start = re.compile(r'^\t\t"?([0-9A-F]{24})"?(?: /\*.*?\*/)? = \{(.*)$')
+    # the indentation of object entries is whatever the file uses (two tabs in Xcode's own
+    # output, 4 or 8 spaces from some generators): take it from the first object line
+    first = re.search(r'^([ \t]+)"?[0-9A-F]{24}"?(?: /\*.*?\*/)? = \{', text, re.M)
+    if not first:
+        return objs
+    indent = re.escape(first.group(1))
+    start = re.compile(r'^' + indent + r'"?([0-9A-F]{24})"?(?: /\*.*?\*/)? = \{(.*)$')
+    close = re.compile(r"^" + indent + r"\};\s*$")
     body = None
     oid = None
     for line in text.splitlines():
@@ -41,7 +48,7 @@ def parse_objects(text):
                 add_object(objs, oid, rest.rstrip()[:-2])
             else:
                 body = [rest]
-        elif re.match(r"^\t\t\};\s*$", line):
+        elif close.match(line):
             add_object(objs, oid, "\n".join(body))
             body = None
         else:
@@ -113,6 +120,10 @@ def main():
             problems += 1
             continue
         files = resolve(objs, root.group(1), base)
+        if not files:
+            print(f"{proj.name}: parsed 0 file references — unrecognised project format, nothing was checked")
+            problems += 1
+            continue
         refs = {f.resolve() for f in files}
         missing = sorted(f for f in files if not f.exists() and f.suffix)
         for f in missing:

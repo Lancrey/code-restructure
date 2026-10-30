@@ -22,10 +22,12 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# build outputs are excluded only when they sit at the repository root: `internal/build/` is source
+TOP_LEVEL_EXCLUDE = {"dist", "build", "out", "target"}
 ALWAYS_EXCLUDE = {
     ".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "venv", "env",
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".nox",
-    "dist", "build", "out", "target", ".next", ".nuxt", ".svelte-kit", ".turbo",
+    ".next", ".nuxt", ".svelte-kit", ".turbo",
     ".cache", ".parcel-cache", "coverage", "htmlcov", ".idea", ".vscode", ".DS_Store",
     "bower_components", ".gradle", ".dart_tool", "Pods", "DerivedData", ".terraform",
 }
@@ -136,8 +138,12 @@ def walk_files(repo: Path, extra_exclude):
         for rel in tracked:
             parts = Path(rel).parts
             hit = next((p for p in parts[:-1] if p in exclude), None)
+            if hit is None and len(parts) > 1 and parts[0] in TOP_LEVEL_EXCLUDE:
+                hit = parts[0]
             if hit:
                 excluded_dirs.add(str(Path(*parts[: parts.index(hit) + 1])))
+                continue
+            if parts[-1] in exclude:  # a file name in the list (.DS_Store)
                 continue
             if (repo / rel).is_file():
                 files.append(rel)
@@ -146,7 +152,7 @@ def walk_files(repo: Path, extra_exclude):
         rel_root = Path(root).relative_to(repo)
         kept = []
         for d in dirs:
-            if d in exclude:
+            if d in exclude or (str(rel_root) == "." and d in TOP_LEVEL_EXCLUDE):
                 excluded_dirs.add(str(rel_root / d) if str(rel_root) != "." else d)
             else:
                 kept.append(d)
@@ -308,10 +314,11 @@ def main():
         rel for rel in rel_files
         if os.path.basename(rel) in ENTRY_POINT_NAMES and "test" not in rel.lower()
     )
+    test_dir_names = {"test", "tests", "__tests__", "spec", "specs", "testing", "e2e", "integration_tests"}
     test_files = sorted(
         rel for rel in rel_files
         if lang_of(rel) in CODE_LANGS and (
-            "/test" in f"/{rel.lower()}" or "/spec" in f"/{rel.lower()}"
+            any(part.lower() in test_dir_names for part in Path(rel).parts[:-1])
             or os.path.basename(rel).startswith("test_")
             or any(os.path.basename(rel).endswith(s) for s in ("_test.py", "_test.go", ".test.ts", ".test.js", ".spec.ts", ".spec.js", "Test.java", "Test.kt", "Test.php"))
         )

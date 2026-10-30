@@ -13,7 +13,9 @@ looks like a word). Hits in files that the migration plan moves are tagged
 [moved] (--plan).
 
 VERIFY (--verify PATH...): re-scans the repo, keeps the values in memory only, and
-greps the given files or folders (reports, evidence) for any of them. Exit 1 and
+greps the given files or folders (reports, evidence) for any of them — every high-confidence
+value, plus low-confidence values that contain a digit or symbol (so a short password like
+"@+ka6_9" is caught; a plain word such as "authority" is not, since it would match prose). Exit 1 and
 print `path:line NAME` when a value is found. Run it on the reports and on the
 evidence folder after every phase.
 
@@ -36,7 +38,7 @@ from pathlib import Path
 
 EXCLUDE_DIRS = {
     ".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "venv", "__pycache__",
-    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", "dist", "build", "out", "target",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
     ".next", ".nuxt", ".turbo", ".cache", "coverage", ".idea", ".gradle", "Pods",
 }
 BINARY_EXT = {
@@ -44,13 +46,17 @@ BINARY_EXT = {
     ".class", ".pyc", ".so", ".dylib", ".dll", ".exe", ".woff", ".woff2", ".ttf", ".otf",
     ".mp3", ".mp4", ".mov", ".sqlite", ".db", ".lock", ".lockb", ".map", ".min.js",
 }
+TOP_LEVEL_EXCLUDE = {"dist", "build", "out", "target"}  # build outputs, only at the repo root
 MAX_BYTES = 2_000_000
 
 NAME_WORDS = (r"secret|passw(?:or)?d|pwd|passphrase|token|salt|credential|api[_-]?key|"
               r"private[_-]?key|access[_-]?key|crypto|key")
+# (?-i:(?![a-z])) rejects a lowercase continuation ("keyboard", "tokenizer") but accepts camelCase ("passwordHash")
+NAME_RX = r"""[A-Za-z0-9_.\-]*(?:%s)(?-i:(?![a-z]))[A-Za-z0-9_.\-]*""" % NAME_WORDS
 ASSIGN = re.compile(
-    r"""(?P<name>["']?[A-Za-z0-9_.\-]*(?:%s)(?![a-z])[A-Za-z0-9_.\-]*["']?)\s*(?:=>|=|:|,)\s*(?:[A-Za-z_]\w*\(\s*)?(?P<q>["'])(?P<val>[^"'\n]{6,})(?P=q)"""
-    % NAME_WORDS, re.I)
+    r"""(?P<name>["']?%s["']?)\s*(?:=>|=|:|,)\s*(?:[A-Za-z_]\w*\(\s*)?(?P<q>["'])(?P<val>[^"'\n]{6,})(?P=q)""" % NAME_RX, re.I)
+# YAML / unquoted mapping value:  MYSQL_ROOT_PASSWORD: s3cr3t   (also "- KEY=value" list items in compose files)
+YAML_KV = re.compile(r"""^\s*-?\s*["']?(?P<name>%s)["']?\s*[:=]\s*(?P<val>[^\s"'#\[\{][^\s#]{5,})\s*(?:#.*)?$""" % NAME_RX, re.I)
 DOTENV = re.compile(r"^\s*(?:export\s+)?(?P<name>[A-Z][A-Z0-9_]*(?:%s)[A-Z0-9_]*)\s*=\s*(?P<val>[^\s'\"#][^\s#]{5,})\s*$" % NAME_WORDS.upper())
 URL_CRED = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://[^/\s:@'\"]+:(?P<val>[^@\s/'\"]{3,})@")
 TOKEN_FORMATS = [
@@ -75,13 +81,19 @@ def clean_name(n):
 def confidence(val):
     if re.search(r"\s", val):
         return None  # prose, not a secret
+    if re.match(r"^[a-z][a-z0-9+.\-]*://", val, re.I) and "@" not in val:
+        return "low"  # a URL without credentials (TOKEN_URL, AUTH_ENDPOINT…)
+    if re.match(r"^[/~.]|^[A-Za-z]:\\", val) and not re.search(r"\d", val):
+        return "low"  # a file path (KEY_PATH = "/etc/ssl/private/x.key")
     has_digit = bool(re.search(r"\d", val))
     has_alpha = bool(re.search(r"[A-Za-z]", val))
-    has_sym = bool(re.search(r"[^A-Za-z0-9_\-./]", val))
+    has_sym = bool(re.search(r"[^A-Za-z0-9_\-./:]", val))
     if len(val) >= 12 and ((has_digit and has_alpha) or has_sym):
         return "high"
     if len(val) >= 8 and has_digit and has_alpha:
         return "high"
+    if len(val) >= 6 and has_sym and (has_digit or has_alpha):
+        return "high"  # short but clearly not a word: "@+ka6_9"
     return "low"
 
 
@@ -93,11 +105,11 @@ def iter_files(repo, excludes):
     except Exception:
         rels = []
         for root, dirs, names in os.walk(repo):
-            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not (Path(root) == repo and d in TOP_LEVEL_EXCLUDE)]
             rels += [os.path.relpath(os.path.join(root, n), repo) for n in names]
     for rel in rels:
         parts = Path(rel).parts
-        if any(p in EXCLUDE_DIRS for p in parts[:-1]):
+        if any(p in EXCLUDE_DIRS for p in parts[:-1]) or (len(parts) > 1 and parts[0] in TOP_LEVEL_EXCLUDE):
             continue
         if os.path.splitext(rel)[1].lower() in BINARY_EXT:
             continue
@@ -146,14 +158,15 @@ def scan_file(path, rel):
     if "\0" in text:
         return hits
     is_env = os.path.basename(rel).startswith(".env") or rel.endswith((".env", ".ini", ".cfg", ".properties", ".conf"))
+    is_yaml = rel.endswith((".yml", ".yaml", ".toml"))
     for ln, line in enumerate(text.splitlines(), 1):
         if len(line) > 2000:
             continue
         seen = set()
         for m in ASSIGN.finditer(line):
             val = m.group("val")
-            if PLACEHOLDER.match(val) or CODE_LOOKUP.search(val):
-                continue
+            if PLACEHOLDER.match(val) or CODE_LOOKUP.search(val) or val.startswith(("$", "%", "<", "{", "#{")):
+                continue  # interpolation or template, not a literal
             c = confidence(val)
             if not c:
                 continue
@@ -162,6 +175,14 @@ def scan_file(path, rel):
         if is_env:
             m = DOTENV.match(line)
             if m and m.group("val") not in seen and not PLACEHOLDER.match(m.group("val")) and not CODE_LOOKUP.search(m.group("val")):
+                c = confidence(m.group("val"))
+                if c:
+                    hits.append((rel, ln, m.group("name"), m.group("val"), c))
+                    seen.add(m.group("val"))
+        if is_yaml or is_env:
+            m = YAML_KV.match(line)
+            if m and m.group("val") not in seen and not PLACEHOLDER.match(m.group("val")) and not CODE_LOOKUP.search(m.group("val")) \
+                    and not m.group("val").startswith(("$", "%", "<", "{")):
                 c = confidence(m.group("val"))
                 if c:
                     hits.append((rel, ln, m.group("name"), m.group("val"), c))
@@ -191,7 +212,9 @@ def scan_repo(repo, excludes):
 def verify(repo, hits, targets):
     values = {}
     for rel, ln, name, val, c in hits:
-        if len(val) >= 8 and c == "high":
+        # every high-confidence value; low-confidence ones only when they are not a plain word
+        # (a plain word such as "authority" would flag legitimate prose in the reports)
+        if c == "high" or (len(val) >= 8 and re.search(r"[\d@#$%^&*!+=]", val)):
             values.setdefault(val, f"{name}")
     leaks = []
     files = []
