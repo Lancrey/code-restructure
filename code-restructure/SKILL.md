@@ -86,7 +86,7 @@ Exit code 1 means a value is in one of those files: remove it and re-run until i
 
 **Secrets already inside files you only move.** `secrets_scan.py --plan` tags hits in files that the relocation table moves with `[moved]`. Do not edit or scrub those files (moves only); list them in the audit as `file:line NAME = <redacted>` and add an Additional recommendation: rotate the credential and scrub the file, noting that moving it into a committed `docs/` folder neither worsens nor fixes the exposure and that it stays in Git history.
 
-**Write `architecture-audit.md`** using the template in `references/report-templates.md`. Rank findings by risk-to-maintainability, not by how easy they are to fix. In `audit` mode, stop here and summarize in the conversation.
+**Write `architecture-audit.md`** using the template in `references/report-templates.md`. Rank findings by risk-to-maintainability, not by how easy they are to fix. In `audit` mode this is the final report: open it with the non-technical "Summary for stakeholders" section described in the template, then stop and summarize in the conversation.
 
 ## Phase 2 — Design
 
@@ -103,7 +103,7 @@ Guard against the two classic failure modes: **over-engineering** (abstractions 
 
 **Decide compatibility measures per public path.** For each path identified in phase 1 as public or externally consumed: keep it working. Options, in order of preference: re-export/forwarding module at the old location (Python `from new.location import *`, JS `export * from`), an alias in the manifest (`tsconfig` paths, `package.json` exports map), a symlink only when the ecosystem has nothing better. Mark each shim with a comment saying where the real code lives and that it is a compatibility layer; whether and when to remove it is the user's call, so put it in the plan as an explicit open question rather than deciding.
 
-**Write `architecture-migration-plan.md`** (template in `references/report-templates.md`). The relocation table must be exhaustive and machine-readable — the check-moves script in phase 3 reads it:
+**Write `architecture-migration-plan.md`** (template in `references/report-templates.md`). In `plan` mode this is the final report: open it with the non-technical "Summary for stakeholders" section described in the template. The relocation table must be exhaustive and machine-readable — the check-moves script in phase 3 reads it:
 
 ```
 | From | To | Note |
@@ -155,7 +155,7 @@ Run `baseline.py` one last time (`--out baseline-after.json --compare baseline-b
 - grep once more for every old path across the whole tree, including `.github/`, `Dockerfile*`, `*.md`;
 - open the compatibility shims and confirm each one actually imports.
 
-**Write `architecture-validation.md`** (template in `references/report-templates.md`). The honesty of this document is the deliverable: a "Not verified" section with real content is better than a green banner. List what you ran, what passed, what you could not test and why, and the rollback command (`git checkout <original-branch>` and the branch/PR to discard).
+**Write `architecture-validation.md`** (template in `references/report-templates.md`). It opens with a **Summary for stakeholders**: 8–12 non-technical lines for a manager or product owner — what was done, why, what proves nothing broke and what could not be checked, what the team must do next, how to go back — with no paths, commands or tool names, in the chosen output language. The same section opens the last report of an `audit` or `plan` run (see the templates), so every mode ends with a page a non-developer can read. The honesty of this document is the deliverable: a "Not verified" section with real content is better than a green banner. List what you ran, what passed, what you could not test and why, and the rollback command (`git checkout <original-branch>` and the branch/PR to discard).
 
 **Publishing is a separate decision, never a default.** Do not push and do not open a PR/MR on your own, even when the host and tooling would allow it. At the end of Phase 4, ask the user (AskUserQuestion when available): keep the branch local (default), push the branch, or push and open a PR/MR. If nobody can answer, keep it local and print the exact commands (`git push -u origin <branch>`, `gh pr create` / `glab mr create`). When the user does ask for a PR/MR, the body is the conversation summary below plus links to the three reports.
 

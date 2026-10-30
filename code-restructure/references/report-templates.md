@@ -11,6 +11,13 @@ Write all three in the language the user chose in Phase 0 (asked explicitly; REA
 
 Date: <YYYY-MM-DD> · Commit: <short sha> · Branch: <branch>
 
+## Summary for stakeholders
+<Only when this audit is the last report of the run (audit mode). Same rules as the
+validation report's stakeholder summary: non-technical, 8–12 lines, no paths or tool names.
+What was examined, the two or three problems that matter in plain words, what they cost
+the team today, what is recommended next and roughly how much work it is, and what was
+not examined. Omit this section in plan and full modes.>
+
 ## Summary
 <3–6 sentences: what the project is, how it is organized today, the two or three
 structural problems that matter most, and whether a restructuring is worth doing.>
@@ -87,6 +94,14 @@ the last subsection.>
 
 Based on: architecture-audit.md (<date>)
 
+## Summary for stakeholders
+<Only when this plan is the last report of the run (plan mode). Same rules as the
+validation report's stakeholder summary: non-technical, 8–12 lines, no paths or tool names.
+What would change and why, what would not change ("the program's behaviour"), the risks
+and how they would be contained, what it would take (steps, rough effort), and the
+decision asked of the reader. Omit this section in full mode, where the validation report
+carries it.>
+
 ## Target layout
 <Proposed tree, same depth as the audit's current tree, annotated.>
 
@@ -141,6 +156,21 @@ Removal of shims is an open question for the user — list it under Decisions.>
 # Validation report — <project name>
 
 Branch: <branch> · Commits: <first sha>..<last sha> · PR/MR: <link or "not opened">
+
+## Summary for stakeholders
+<Non-technical, 8–12 lines, written for a manager or product owner who will not read the
+rest. No paths, no commands, no tool names. Cover, in this order:
+- what was done, in plain words ("the project's files were reorganised into clearer
+  folders; the program itself was not changed");
+- why it was worth doing (what becomes easier or less risky);
+- what proves nothing broke (e.g. "the same N automated tests pass before and after",
+  "the application was started and its main functions checked") — and what could NOT be
+  checked, said plainly ("the behaviour on the production server was not tested");
+- what the team needs to do now (review, merge, deploy; any one-time action such as
+  clearing a cache or updating a deployment script);
+- the way back if a problem appears ("the previous version is intact and can be
+  restored in minutes").
+State the status in one word at the end: Verified within limits / Partial / Failed.>
 
 ## What changed
 <Short prose, then the before/after trees side by side or stacked.>
