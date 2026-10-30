@@ -1,0 +1,181 @@
+---
+name: code-restructure
+description: Architectural audit and safe structural refactoring of an existing codebase (any language, any Git host, local folder or attached repo). Use this skill whenever the user asks to restructure, reorganize, modularize, clean up or audit the architecture of a project — "clean up my project structure", "this repo grew organically", "separate features into modules", "move plugins into their own folder", "make this maintainable/scalable", "audit the architecture", "refactor the structure without breaking anything" — or types /restructure. Also use it for audit-only or plan-only requests about a repo's organization. Do not use it for feature work, bug fixes, or logic refactors inside a single file; the point of this skill is moving things without changing what they do.
+---
+
+# Code Restructure
+
+Audit the architecture of a repository that grew without a plan, design a better structure for it, migrate the files, and prove nothing broke. The skill covers four phases; the user may ask for any prefix of them.
+
+| Mode | Phases | Typical request |
+|---|---|---|
+| `audit` | 1 | "audit my architecture", "what's wrong with this structure" |
+| `plan` | 1–2 | "propose a better layout", "how would you reorganize this" |
+| `full` (default) | 1–4 with an approval gate after phase 2 | "restructure this", `/restructure` |
+
+If the user says they don't want to be asked ("just do it", `--no-gate`), skip the gate but still write the plan document first — the plan is what the user and the next engineer will read to understand the diff.
+
+## The one rule that outranks the others
+
+Behaviour must be identical before and after. A cleaner tree that breaks one import, one CI job, one hard-coded path or one `pip install -e .` has negative value: the user came here to reduce risk, not to trade known debt for an unknown regression. Whenever a structural improvement and compatibility conflict, keep compatibility and write down what you did not do and why. Passing tests are evidence, not proof — say "verified by X" and "not verified", never "fully safe".
+
+Everything below is in service of that rule.
+
+## Phase 0 — Setup (always)
+
+1. **Locate the repo.** Local folder, attached repo (`add_repo` in claude.ai/Cowork) or a path the user gives. If the folder is not a Git repo, say so and ask before continuing: without Git there is no rollback path, and you would be working without a safety net.
+2. **Confirm scope** in one line: which mode, which programming language(s), and the output language (see step 6), any constraint the user already stated (e.g. "I want a `src/` layout", "don't touch `legacy/`"). Only ask a question if a wrong guess would be expensive; otherwise state your assumption and proceed.
+3. **Run the inventory script** — it gives you the tree, language mix, manifests, entry points, test runners, CI files and the directories to leave alone, in one call:
+   ```bash
+   python3 <skill-path>/scripts/inventory.py <repo> --out <workdir>/inventory.json
+   ```
+   Read the JSON summary it prints. It is the map for everything that follows.
+4. **Read the repo's own guidance**: `README`, `CONTRIBUTING`, `CLAUDE.md`/`AGENTS.md`, `ARCHITECTURE*`, `docs/`. If the project has stated conventions, your proposal must respect them or explicitly argue against them.
+5. **Load the ecosystem reference** that matches the dominant language(s), from `references/` — see the table at the end. It tells you how imports resolve, which files pin paths (manifests, tsconfig, pyproject, Cargo.toml…), the idiomatic layouts, and the ecosystem's refactoring tools. Mixed repos: load every reference that applies.
+6. **Decide where reports go and in which language.** Default is `docs/architecture-audit.md`, `docs/architecture-migration-plan.md`, `docs/architecture-validation.md`. If the repo already has a documentation convention (`documentation/`, `doc/`, a docs site with a source dir), put them there instead. **Ask the user which language the reports and the conversation summary must be written in** (English or French; offer the README's language as the suggested default, listed first), unless they already stated it in the request. Ask it in the same question as the scope check, using AskUserQuestion when available. If nobody can answer (scheduled or unattended run, or the question went unanswered), use the README's language, and say which one you chose at the top of the audit. Code identifiers, paths and commands stay verbatim. Use the chosen language for every report, the PR description and the final summary.
+
+## Phase 1 — Analysis
+
+Goal: understand the codebase well enough that the plan you write in phase 2 has no surprises in phase 3. The inventory gives you the skeleton; now read the code.
+
+**Build the dependency picture.** For every top-level module/package/directory: what does it import, what imports it, which ones are entry points (CLI, web handlers, scheduled jobs, build targets). Use the ecosystem's own tooling when it exists (`pydeps`, `madge`, `go list -deps`, `cargo tree`, `jdeps`), otherwise grep import statements. You are looking for:
+
+- cycles (A imports B imports A) — moving one side of a cycle usually breaks it in a way tests may not catch;
+- god modules — one `utils.py` / `helpers.js` that everything imports and that mixes unrelated concerns;
+- misplaced files — a database layer inside `views/`, tests next to scripts, a plugin inside `core/`;
+- duplicated responsibility — two modules doing the same thing with different names;
+- dead-looking code — flag it, never delete it in this skill (see safeguards).
+
+**Find every integration point that pins a path.** This is where structural refactors fail silently. Check, and record in the audit:
+
+- dynamic imports and string-based loading (`importlib.import_module("plugins." + name)`, `require(\`./${name}\`)`, reflection, plugin registries, Django `INSTALLED_APPS`, Spring component scan, service loaders);
+- paths in configuration: manifests (`pyproject.toml` `packages=`, `package.json` `main`/`exports`/`bin`/`files`, `tsconfig` `paths`, `Cargo.toml` `[[bin]]`, `setup.cfg`), Dockerfiles, `docker-compose`, Makefiles, CI workflows, `.pre-commit-config`, linter configs with per-path rules, IDE run configs;
+- runtime file references: `open("data/x.json")`, `__file__`-relative paths, `os.path.join(BASE_DIR, ...)`, templates/static directories, migration folders, fixtures, asset pipelines;
+- public surface: anything published (package exports, `__init__.py` re-exports, a library's documented import paths), CLI commands, env vars that carry paths, documented URLs to files in the repo (raw GitHub links in a README count).
+
+Grep for each of these; do not rely on memory of "what projects usually do". The inventory JSON lists the config files it found so you can open each one.
+
+**Identify the functional domains.** Group what you found into the natural units of this project: features, shared/infrastructure, plugins/extensions, scripts/tooling, tests, config. Name them in the project's own vocabulary (if the README says "connectors", don't call them "adapters").
+
+**Verify every factual claim before it goes in a report.** Reports are read as ground truth and the migration plan is built on them, so a wrong statement ("Core imports only Foundation", "84 tests", "file X is 1,600 lines") propagates into wrong moves. Reading a file and summarizing it is how these errors get in; confirm with a command instead — `grep -h '^import' dir/*`, `wc -l`, a test-function count, a dependency tool's output — and re-check any claim that appears in more than one place (summary and detail tables must agree). Where the repo's own documents disagree with the code (a README that says 63 tests while there are 84), report the discrepancy rather than choosing silently.
+
+**Additional recommendations.** The user wants the audit to go beyond structure when the evidence supports it: logic-level refactors, duplicated code, dependency cycles, dead code, performance or correctness defects, stale documentation, build or tooling gaps. These belong in a dedicated section of the audit, "Additional recommendations", kept strictly apart from the structural findings and from the migration plan, because the migration must stay a pure move. The bar for an entry is high, since the user will act on it:
+
+- **Confirmed.** State the evidence: the command and its output, or the file and line range. "Probably unused" is not an entry; "no reference found by `grep -rn X` over these paths, and no dynamic loading in the repo (checked: …)" is.
+- **Solid.** Say what the change would be, what it would affect, what could go wrong, and how to check it afterwards. If you could not confirm a suspicion, put it under "Suspected, not confirmed" with what would settle it.
+- **Rated** by value and risk, and tagged as *behaviour-preserving* or *behaviour-changing*; the latter must say exactly what changes.
+- **Never executed** by this skill. Phase 3 only carries out the structural plan; additional recommendations wait for the user's explicit choice and become a separate task.
+
+Quality matters more than volume: five verified entries are worth more than twenty impressions.
+
+Save the raw output of every tool an entry cites (knip, `npm audit`, dependency graphs, diffs) next to the reports, in a `restructure-evidence/` folder, and name the file in the entry. A reader who doubts a claim then has the output, not just your summary of it.
+
+**Never copy secret values into any report or evidence file.** When the repo contains credentials, keys, salts, tokens or passwords (a config file with `define('..._KEY', '…')`, an `.env`, a connection string), record only the file, the line number and the variable name, and redact the value (`AM_CRON_KEY = <redacted>`). Reports and evidence get committed, shared and pasted; a secret copied into them is a second leak that survives even if the original is rotated out of the code. If a grep output would contain a value, do not save it as is: write only `file:line NAME = <redacted>` (for example by extracting the name with `sed -E "s/^([^:]+:[0-9]+):.*define\\('([A-Z0-9_]+)'.*/\\1 \\2 = <redacted>/"`, adapted to the language), and check the saved file by grepping it for a fragment of one real value. Report the finding itself ("secrets are committed in `include/config.php`, lines …") and recommend rotation as an additional recommendation.
+
+**Secrets already inside files you only move.** Before a migration, grep the files that will be relocated (existing reports, docs, notes) for the secret values found in config. If a hit exists, do not edit or scrub the file (moves only); list `file:line NAME = <redacted>` in the audit and add an Additional recommendation: rotate the credential and scrub the file, noting that moving it into a committed `docs/` folder does not worsen or fix the exposure but keeps it in history.
+
+**Write `architecture-audit.md`** using the template in `references/report-templates.md`. Rank findings by risk-to-maintainability, not by how easy they are to fix. In `audit` mode, stop here and summarize in the conversation.
+
+## Phase 2 — Design
+
+Design the target structure for *this* repo. There is no house template; the right answer for a 40-file Flask app, a Laravel site, a Rust workspace and a monorepo of three Node services are four different shapes. Use the ecosystem reference's idiomatic layouts as the menu, then pick based on:
+
+- what the code actually does (the domains from phase 1), not what it is named;
+- the size: a repo with 30 source files does not need `domain/application/infrastructure` layers; it needs five well-named folders;
+- where the project is going, if the user said anything about it ("we'll add more plugins", "we'll split the API out");
+- what the existing conventions already got right — keep those, change only what the audit justifies.
+
+Guard against the two classic failure modes: **over-engineering** (abstractions nobody asked for, a structure that would suit a 10-person team on a solo project) and **a rewrite in disguise** (if the plan touches most lines of most files, it is not a structural refactor any more — scale it back).
+
+**Prefer incremental.** Order the moves so that each step leaves the repo working: usually leaf utilities first, then features, then entry points, then cleanup of compatibility shims. Each step should be one commit the user could stop at.
+
+**Decide compatibility measures per public path.** For each path identified in phase 1 as public or externally consumed: keep it working. Options, in order of preference: re-export/forwarding module at the old location (Python `from new.location import *`, JS `export * from`), an alias in the manifest (`tsconfig` paths, `package.json` exports map), a symlink only when the ecosystem has nothing better. Mark each shim with a comment saying where the real code lives and that it is a compatibility layer; whether and when to remove it is the user's call, so put it in the plan as an explicit open question rather than deciding.
+
+**Write `architecture-migration-plan.md`** (template in `references/report-templates.md`). The relocation table must be exhaustive and machine-readable — the check-moves script in phase 3 reads it:
+
+```
+| From | To | Note |
+|---|---|---|
+| src/utils.py | src/core/text.py | split: text helpers |
+| src/utils.py | src/core/dates.py | split: date helpers |
+| plugins/*.py | src/plugins/<name>/ | one dir per plugin |
+```
+
+Then **stop and present the plan** (unless the user disabled the gate). In the conversation: the before/after tree, the three or four riskiest moves and how you will protect them, and any decision you want the user to make. Do not start moving files until they answer. In `plan` mode this is the end.
+
+## Phase 3 — Migration
+
+**Baseline first.** Before any change, record what "working" looks like:
+
+```bash
+python3 <skill-path>/scripts/baseline.py <repo> --out <workdir>/baseline-before.json
+```
+
+It detects and runs the checks the repo has (tests, build, lint, type-check, `--help` of each CLI entry point), and stores exit codes and output. If a check already fails on the untouched repo, note it: it is not your regression, but you must not make it worse and you cannot use it as evidence. If the repo has **no tests at all**, the floor is: build passes, every entry point starts, the import graph resolves. Say so in the plan, and offer to write characterization tests for the areas the audit flagged as critical *before* migrating them — the user decides.
+
+**Branch.** `git checkout -b restructure/<short-name>` from the current branch. Never commit to the default branch; the user reviews a diff, they don't inherit one.
+
+**Move with the ecosystem's tool when one exists, `git mv` otherwise.** Rename-aware tools (`rope`, IDE refactors, `ts-morph`/`jscodeshift`, `gofmt -r`, `cargo` module moves, IntelliJ) update references for you and are far less error-prone than regex. When you fall back to `git mv` + manual edits, do one logical group at a time.
+
+**After every step:**
+
+1. update imports, manifests, configs, CI, docs, and anything else the audit listed for the paths you just moved;
+2. run the stale-reference check — it reads the relocation table in the plan and greps the whole repo (including configs, YAML, Dockerfiles, Markdown) for every `From` path that should no longer be referenced:
+   ```bash
+   python3 <skill-path>/scripts/check_moves.py <repo> --plan docs/architecture-migration-plan.md
+   ```
+   Every hit is either a compatibility shim you placed on purpose, or a reference you missed. There is no third category. The script matches full paths, dotted module names, and file names with extension (which is how manifests such as `Package.swift` `exclude:` lists and `project.pbxproj` refer to files); it deliberately ignores bare identifiers in ordinary source code and prose, so it complements, not replaces, the ecosystem's own build check — for Xcode projects also run `scripts/pbxproj_check.py`;
+3. re-run the baseline checks (`baseline.py` with `--out baseline-step-N.json`);
+4. commit, with a message that names the step from the plan.
+
+If a step breaks something you cannot fix cleanly within the scope of "moving things", revert that step (`git revert` or `git checkout -- .` before commit), leave the files where they were, and record it in the validation report as an exclusion. Preferring a half-finished migration that works over a complete one that doesn't is the rule from the top of this document.
+
+**Scope discipline.** While you are in a file to fix an import, you will see things worth improving: a bad name, a long function, an obsolete comment. Leave them. Mixing behavioural edits into a structural diff makes the diff unreviewable and makes any later bug impossible to bisect. Record the ones that matter in the audit's "Additional recommendations" section (see Phase 1), where they are kept apart from the structural work.
+
+## Phase 4 — Verification
+
+Run `baseline.py` one last time (`--out baseline-after.json`) and compare with `baseline-before.json`: same checks, same pass/fail, ideally same output. Then go beyond the automated checks:
+
+- resolve the import graph from a clean environment if you can (fresh `pip install -e .`, `npm ci`, `go build ./...`, `cargo check`) — a stale `__pycache__`/`node_modules` can mask a broken path;
+- start every entry point the inventory found (CLI `--help`, `manage.py check`, server dry-run, `npm run build`);
+- grep once more for every old path across the whole tree, including `.github/`, `Dockerfile*`, `*.md`;
+- open the compatibility shims and confirm each one actually imports.
+
+**Write `architecture-validation.md`** (template in `references/report-templates.md`). The honesty of this document is the deliverable: a "Not verified" section with real content is better than a green banner. List what you ran, what passed, what you could not test and why, and the rollback command (`git checkout <original-branch>` and the branch/PR to discard).
+
+**Open a PR/MR** when the host and tooling allow (`gh pr create`, `glab mr create`, or the Git connector); otherwise push the branch and give the user the command. PR body = the conversation summary below plus links to the three reports.
+
+**Conversation summary**, under ten lines: what moved, why the new shape is easier to work in, which checks passed, what remains unverified or excluded, where the branch/PR is.
+
+## Safeguards and why each one exists
+
+- **Never modify the default branch directly.** The user must be able to look at the diff and say no.
+- **Never delete code because it looks unused.** Grep finds static references; it does not find reflection, plugin discovery, external callers, or a cron job on a server. Flag dead-code candidates in the audit and leave removal to a separate, deliberate task.
+- **Never change business logic in this skill.** A structural PR must be reviewable as "nothing changed but locations". If a move truly requires a logic change (e.g. a circular import can only be broken by a lazy import), make it minimal, isolate it in its own commit, and call it out in the validation report.
+- **Never assume a move is harmless.** The audit's list of path-pinning integration points exists because every one of them is a place a `git mv` breaks silently. Check each before moving the file it points to.
+- **Never bypass a failing check.** Skipping a test, loosening a linter rule, or adding `# noqa` to make the baseline green hides the exact signal you need.
+- **Never claim full safety.** Tests cover what someone thought to test. Report "verified by …" and "not verified" and let the user decide how much risk they accept.
+- **Always keep a rollback path.** One branch, atomic commits per step, original branch untouched. State the rollback command in the validation report.
+- **Always preserve public contracts** (exports, import paths, CLI commands, resource locations, URLs): someone you can't see depends on them. Shim, alias or keep in place.
+- **If a change cannot be validated, exclude it** and say so. The user can authorize it explicitly if they want it anyway.
+
+## What not to touch
+
+Directories the inventory script marks as excluded: VCS metadata, dependency directories (`node_modules`, `vendor`, `.venv`, `target`), build outputs (`dist`, `build`, `out`), generated code, caches, and anything matching `.gitignore`. Beyond that, exclusions are project-specific: ask about `migrations/`, `legacy/`, fixtures with hard-coded paths, and anything the README says is frozen.
+
+## References
+
+Load the ones that apply; each covers how imports and paths resolve, idiomatic layouts, path-pinning files to check, refactoring tools, and the ecosystem's usual traps.
+
+| File | Covers |
+|---|---|
+| `references/python.md` | packages, `src/` layout, pyproject/setup, Django/Flask/FastAPI, pytest, rope |
+| `references/javascript-typescript.md` | ESM/CJS resolution, `package.json` exports, tsconfig paths, monorepos, Next/Nest/Express, Vite/webpack |
+| `references/go.md` | modules, `internal/`, `cmd/`, `pkg/`, gopls rename |
+| `references/rust.md` | crates, workspaces, `mod` tree, `[[bin]]`, cargo tooling |
+| `references/java-kotlin.md` | packages, Maven/Gradle modules, Spring component scan, IntelliJ refactors |
+| `references/php.md` | PSR-4 autoload, Composer, Laravel/Symfony conventions |
+| `references/swift.md` | SwiftPM targets, Xcode `project.pbxproj`, plists/entitlements, lproj, macOS-only verification |
+| `references/report-templates.md` | the three report templates |
+
+For a language not listed, apply the same four questions (how do imports resolve, which files pin paths, what is the idiomatic layout, which tool renames safely) and say in the audit that no ecosystem reference was available.
