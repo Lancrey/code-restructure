@@ -13,6 +13,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install pytest (used by the baseline end-to-end tests)
         run: python -m pip install -q pytest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install sass (used by the front-end end-to-end tests)
+        run: npm install -g sass@1.80.6
       - name: Lint scripts (ruff, errors and pyflakes rules)
         run: python -m pip install -q ruff && ruff check --select E9,F code-restructure/scripts tests
       - name: Compile scripts

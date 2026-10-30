@@ -79,7 +79,7 @@ HTML_EXT = {".html", ".htm", ".xhtml", ".tpl", ".twig", ".jinja", ".jinja2", ".j
 CSS_URL = re.compile(r"""url\(\s*(?!['"]?(?:data:|https?:|//|#|%23|\$|@|\{|<))['"]?([^'")\s]+)['"]?\s*\)""")
 CSS_IMPORT = re.compile(r"""@(?:import|use|forward)\s+(?:\(reference\)\s*|\(css\)\s*|\(less\)\s*)?(?!url\()['"](?!(?:https?:|//|data:|sass:|~|@|\$))([^'"]+)['"]""")
 # src= href= srcset= poster= data-src= ; also <use href> ; ignores absolute, root-relative, anchors, schemes, template expressions
-HTML_ATTR = re.compile(r"""\b(?:src|href|srcset|poster|data-src|xlink:href)\s*=\s*(["'])(?!(?:https?:|//|/|#|mailto:|tel:|data:|javascript:|\{|\$|<\?|%|\s*$))([^"']+)\1""", re.I)
+HTML_ATTR = re.compile(r"""\b(src|href|srcset|poster|data-src|xlink:href)\s*=\s*(["'])(?!(?:https?:|//|/|#|mailto:|tel:|data:|javascript:|\{|\$|<\?|%|\s*$))([^"']+)\2""", re.I)
 
 
 def style_resolves(repo, importer, spec, kind):
@@ -99,25 +99,45 @@ def style_resolves(repo, importer, spec, kind):
         for c in (posixpath.join(d, n + e), posixpath.join(d, "_" + n + e), posixpath.join(base, "_index" + e), posixpath.join(base, "index" + e)):
             if (repo / c).is_file():
                 return True
-    # a bare Sass/Less specifier may come from a load path or node_modules, which this script does not know
-    if not spec.startswith(".") and ext_i in (".scss", ".sass", ".less") and (repo / "node_modules").is_dir():
-        return True
+    # a bare Sass/Less specifier may name an npm package (`@use "bootstrap/scss/bootstrap"`): accept it only
+    # when that package directory exists in node_modules, not merely because node_modules exists
+    if not spec.startswith(".") and ext_i in (".scss", ".sass", ".less"):
+        segs = spec.lstrip("~").split("/")
+        pkg = "/".join(segs[:2]) if segs[0].startswith("@") and len(segs) > 1 else segs[0]
+        if (repo / "node_modules" / pkg).is_dir():
+            return True
     return False
 
 
-def html_resolves(repo, page, spec):
-    spec = spec.split("?")[0].split("#")[0].strip()
-    if not spec:
-        return True
-    # srcset: "a.png 1x, b.png 2x" -> every candidate
-    parts = [p.strip().split()[0] for p in spec.split(",") if p.strip()] if " " in spec or "," in spec else [spec]
-    for p_ in parts:
-        if p_.startswith(("/", "http", "//", "{", "$", "<", "%")):
+FILE_LIKE = re.compile(r"\.[A-Za-z0-9]{1,6}$")
+
+
+def html_unresolved(repo, page, attr, value, tag):
+    """Return the candidate paths of one attribute that do not exist on disk.
+
+    `src`, `srcset`, `poster`, `data-src` always name files. `href` names a file only on <link>
+    (stylesheets, icons, preloads) or when it has a file extension (`about.html`, `doc.pdf`);
+    `href="contact"` or `href="../about"` is a navigation URL that a router or the server may
+    serve, so it is never reported from a template or page."""
+    value = value.strip()
+    if not value:
+        return []
+    if attr in ("href", "xlink:href") and tag not in ("link", "use", "image"):
+        if not FILE_LIKE.search(value.split("?")[0].split("#")[0]):
+            return []
+    if attr == "srcset":
+        cands = [p.strip().split()[0] for p in value.split(",") if p.strip()]
+    else:
+        cands = [value]
+    bad = []
+    for c in cands:
+        c = c.split("?")[0].split("#")[0]
+        if not c or c.startswith(("/", "http", "//", "{", "$", "<", "%", "#")):
             continue
-        base = posixpath.normpath(posixpath.join(posixpath.dirname(page), p_))
+        base = posixpath.normpath(posixpath.join(posixpath.dirname(page), c))
         if not (repo / base).is_file() and not (repo / base).is_dir():
-            return False
-    return True
+            bad.append(c)
+    return bad
 
 
 def js_resolves(repo, base):
@@ -182,6 +202,9 @@ def init_binds(name, init_txt):
     return False
 
 
+UNCERTAIN = []  # (file, line, spec): references this script cannot settle either way
+
+
 def hint_for(moved_hint, importer, spec):
     base = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec.split("?")[0].split("#")[0]))
     stem = posixpath.splitext(base)[0]
@@ -205,6 +228,7 @@ def unresolved_relative_imports(repo, files, moved_hint, dests=()):
         ext = os.path.splitext(rel)[1].lower()
         if rel.endswith(".blade.php"):
             ext = ".html"
+        sfc = ext in (".vue", ".svelte", ".astro")  # script + template + style in one file: check all three
         if ext not in JS_SRC and ext != ".py" and ext not in STYLE_EXT and ext not in HTML_EXT:
             continue
         try:
@@ -212,23 +236,31 @@ def unresolved_relative_imports(repo, files, moved_hint, dests=()):
         except OSError:
             continue
         for ln, line in enumerate(text.splitlines(), 1):
-            if ext in STYLE_EXT:
+            if ext in STYLE_EXT or sfc:
                 for m in CSS_URL.finditer(line):
                     if not style_resolves(repo, rel, m.group(1), "url"):
-                        out.append((rel, ln, "url(%s)" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
+                        if ext in (".scss", ".sass", ".less"):
+                            # Sass copies url() verbatim: it resolves against the COMPILED css, whose location this
+                            # script does not know. Not resolving from the source is a doubt, not a verdict.
+                            UNCERTAIN.append((rel, ln, "url(%s)" % m.group(1)))
+                        else:
+                            out.append((rel, ln, "url(%s)" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
                 for m in CSS_IMPORT.finditer(line):
                     if not style_resolves(repo, rel, m.group(1), "import"):
                         out.append((rel, ln, "@import %s" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
-                continue
-            if ext in HTML_EXT:
+                if not sfc:
+                    continue
+            if ext in HTML_EXT or sfc:
                 for m in HTML_ATTR.finditer(line):
-                    if not html_resolves(repo, rel, m.group(2)):
-                        out.append((rel, ln, m.group(2)[:80], hint_for(moved_hint, rel, m.group(2).split()[0])))
-                # inline style="background: url(...)" and <style> blocks in templates
-                for m in CSS_URL.finditer(line):
-                    if not style_resolves(repo, rel, m.group(1), "url"):
-                        out.append((rel, ln, "url(%s)" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
-                continue
+                    tags = re.findall(r"<([A-Za-z][\w:-]*)", line[:m.start()])
+                    tag = tags[-1].lower() if tags else ""
+                    for bad in html_unresolved(repo, rel, m.group(1).lower(), m.group(3), tag):
+                        out.append((rel, ln, f"{m.group(1)}={bad}"[:80], hint_for(moved_hint, rel, bad)))
+                if not sfc:  # inline style="…url()" and <style> blocks: plain CSS, relative to the page
+                    for m in CSS_URL.finditer(line):
+                        if not style_resolves(repo, rel, m.group(1), "url"):
+                            out.append((rel, ln, "url(%s)" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
+                    continue
             if ext == ".py":
                 m = REL_PY.match(line)
                 if m:
@@ -349,6 +381,8 @@ def main():
     ap.add_argument("--json", help="write hits to this JSON file")
     ap.add_argument("--no-imports", action="store_true", help="skip the relative-import resolution check")
     ap.add_argument("--all-unresolved", action="store_true", help="list every unresolved reference, including those not explained by the plan")
+    ap.add_argument("--before", metavar="JSON", help="--json output of a run on the ORIGINAL commit: any unresolved reference that is not in it is new, and fails the run even when the plan does not explain it")
+    ap.add_argument("--expand-globs", action="store_true", help="print the concrete files each glob From row matches on disk (run it BEFORE moving, to turn glob rows into explicit rows in the plan) and exit")
     ap.add_argument("--in-progress", action="store_true",
                     help="mid-migration run: rows whose From still exists and To does not are PENDING and skipped "
                          "(reported as a count); without this flag every row of the plan must be done")
@@ -374,6 +408,16 @@ def main():
         f, t = m.split("=", 1)
         moves.append((f.strip(), t.strip(), ""))
 
+    if args.expand_globs:
+        for frm, to, note in moves:
+            if any(ch in frm for ch in "*?[]"):
+                for p_ in sorted(repo.glob(frm.strip().rstrip("/"))):
+                    if p_.is_file():
+                        relp = str(p_.relative_to(repo))
+                        dest = to.replace("<name>", posixpath.splitext(posixpath.basename(relp))[0]) if "<name>" in to else posixpath.join(to.rstrip("/"), posixpath.basename(relp)) if to.endswith("/") else to
+                        print(f"| {relp} | {dest} | {note or 'from ' + frm} |")
+        return
+
     plan_rel = None
     if args.plan:
         try:
@@ -382,7 +426,7 @@ def main():
             plan_rel = None
     allow = list(args.allow)
     # the plan itself and the other architecture reports legitimately mention old paths
-    for name in ("architecture-audit.md", "architecture-migration-plan.md", "architecture-validation.md"):
+    for name in ("architecture-audit*.md", "architecture-migration-plan*.md", "architecture-validation*.md"):
         allow += [name, "*/" + name]
     allow += ["restructure-evidence/*", "*/restructure-evidence/*"]
     if plan_rel:
@@ -490,11 +534,22 @@ def main():
         broken = unresolved_relative_imports(repo, files, moved_hint, dests)
     caused = [b for b in broken if b[3]]
     unrelated = [b for b in broken if not b[3]]
+    new_since_before = []
+    if args.before:
+        try:
+            prev = json.loads(Path(args.before).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"--before file unreadable: {e}", file=sys.stderr)
+            sys.exit(2)
+        seen_before = {(u["file"], u["spec"]) for u in prev.get("unresolved_relative_imports", [])}
+        new_since_before = [b for b in unrelated if (b[0], b[2]) not in seen_before]
+        unrelated = [b for b in unrelated if (b[0], b[2]) in seen_before]
 
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps({"stale": hits, "relocation_table": table_problems, "unresolved_relative_imports": [
-            {"file": f, "line": l, "spec": s_, "moved_to": h} for f, l, s_, h in broken]}, indent=2), encoding="utf-8")
+            {"file": f, "line": l, "spec": s_, "moved_to": h} for f, l, s_, h in broken],
+            "uncertain": [{"file": f, "line": l, "spec": s_} for f, l, s_ in UNCERTAIN]}, indent=2), encoding="utf-8")
 
     if table_problems:
         print(f"{len(table_problems)} relocation-table row(s) disagree with the disk:")
@@ -503,6 +558,16 @@ def main():
         print()
 
     def report_broken():
+        if new_since_before:
+            print(f"\n{len(new_since_before)} relative reference(s) unresolved now and resolved on the original commit, not explained by the plan — a move the plan does not list, or a path edit gone wrong:")
+            for f, l, s_, h in sorted(new_since_before)[:80]:
+                print(f"  {f}:{l}  {s_}")
+        if UNCERTAIN:
+            print(f"\n{len(UNCERTAIN)} url() in Sass/Less sources do not resolve from the source file; they resolve against the compiled CSS, which this script cannot locate — compare the compiled output instead:")
+            for f, l, s_ in sorted(UNCERTAIN)[:10]:
+                print(f"  {f}:{l}  {s_}")
+            if len(UNCERTAIN) > 10:
+                print(f"  … {len(UNCERTAIN) - 10} more")
         if caused:
             print(f"\n{len(caused)} relative reference(s) broken by the listed moves:")
             for f, l, s_, h in sorted(caused)[:80]:
@@ -530,7 +595,7 @@ def main():
         else:
             print("nothing to check in the relocation table")
         report_broken()
-        if caused or table_problems:
+        if caused or table_problems or new_since_before:
             sys.exit(1)
         return
     by_file = {}

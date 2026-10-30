@@ -85,6 +85,16 @@ class SecretsScan(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("no file matches", out)
 
+    def test_generic_name_low_values_hidden_but_strict_verified(self):
+        r = make_repo({"s.py": 'key = "playlist"\n', "docs/r.md": "the playlist\n"})
+        code, out = run_script("secrets_scan.py", r, "--all")
+        self.assertNotIn("playlist", out)
+        self.assertNotIn("s.py", out)
+        code, out = run_script("secrets_scan.py", r, "--verify", r / "docs")
+        self.assertEqual(code, 0, out)
+        code, out = run_script("secrets_scan.py", r, "--verify", r / "docs", "--strict")
+        self.assertEqual(code, 1, out)
+
     def test_plan_tags_moved_files(self):
         r = self.repo()
         write(r, {"plan.md": "| From | To | Note |\n|---|---|---|\n| config.php | conf/config.php | |\n"})

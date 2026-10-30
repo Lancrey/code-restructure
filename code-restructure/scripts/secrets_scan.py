@@ -193,7 +193,7 @@ def scan_file(path, rel):
             # a bare `key`/`token`/`salt` is usually a map key or a loop variable (`key: 'playlist'`):
             # keep it only when the value itself looks like a secret
             if c == "low" and name.lower() in GENERIC_SECRET_NAMES:
-                continue
+                c = "low-generic"  # kept for --strict verification, never listed
             hits.append((rel, ln, name, val, c))
             seen.add(val)
         if is_env:
@@ -239,7 +239,7 @@ def verify(repo, hits, targets, strict=False):
         # every high-confidence value; low-confidence ones only when they are not a plain word
         # (a plain word such as "authority" would flag legitimate prose in the reports) —
         # unless --strict, which checks every candidate value of 6+ characters
-        if strict or c == "high" or (len(val) >= 8 and re.search(r"[\d@#$%^&*!+=]", val)):
+        if strict or c == "high" or (c == "low" and len(val) >= 8 and re.search(r"[\d@#$%^&*!+=]", val)):
             values.setdefault(val, f"{name}")
     leaks = []
     files = []
@@ -320,7 +320,7 @@ def main():
     lines, rows = [], []
     low = sum(1 for h in hits if h[4] == "low")
     for rel, ln, name, val, c in sorted(hits, key=lambda h: (h[0], h[1])):
-        if c == "low" and not args.all:
+        if c == "low-generic" or (c == "low" and not args.all):
             continue
         tag = " [moved]" if moved_src and is_moved(rel, moved_src) else ""
         if rel in IGNORED:
