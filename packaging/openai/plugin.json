@@ -1,0 +1,17 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "code-restructure",
+  "version": "0.1.0",
+  "description": "Architecture audits, migration plans, and guarded behaviour-preserving repository restructuring.",
+  "author": {
+    "name": "Pluristack"
+  },
+  "repository": "https://github.com/Lancrey/code-restructure",
+  "license": "MIT",
+  "keywords": [
+    "architecture",
+    "refactoring",
+    "git",
+    "code-restructure"
+  ]
+}

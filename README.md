@@ -32,6 +32,23 @@ Python, JavaScript/TypeScript, Go, Rust, Java/Kotlin, PHP, Swift/Xcode. Other la
 - **Claude.ai / Cowork:** zip the `code-restructure/` folder as `code-restructure.skill` and import it in Settings > Capabilities > Skills.
 - **Claude Code:** copy `code-restructure/` into `~/.claude/skills/` (or `.claude/skills/` in a project).
 
+
+## ChatGPT and Codex
+
+The existing Claude skill stays unchanged. Generate a skill-only OpenAI plugin
+from the same scripts and references:
+
+```bash
+python3 tools/build_openai.py --zip
+```
+
+The plugin is created in `dist/openai/code-restructure/`, with a ZIP beside it.
+You can also install its generated Skill in Codex under
+`~/.agents/skills/code-restructure/`. In ChatGPT, use a supported plugin
+installation surface. The `full` mode requires a writable repository checkout
+and a terminal; reading files via a connector alone supports only `audit` and
+`plan`. See [OpenAI compatibility](docs/openai-compatibility.md).
+
 ## Usage
 
 Type `/restructure` in a conversation with a repository attached or checked out, or ask for an architecture audit or a structural cleanup.
