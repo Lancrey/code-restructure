@@ -87,6 +87,15 @@ class Detect(unittest.TestCase):
         cmd = [c["cmd"] for c in baseline.detect_checks(r) if c["id"] == "pytest"][0]
         self.assertNotIn(" -x", cmd)
 
+    def test_ruff_only_when_the_project_configures_it(self):
+        import shutil
+        if not shutil.which("ruff"):
+            self.skipTest("ruff not installed")
+        r = make_repo({"setup.py": "", "a.py": "x = 1\n"})
+        self.assertNotIn("ruff", [c["id"] for c in baseline.detect_checks(r)])
+        r = make_repo({"pyproject.toml": "[tool.ruff]\nline-length = 100\n", "a.py": "x = 1\n"})
+        self.assertIn("ruff", [c["id"] for c in baseline.detect_checks(r)])
+
     def test_pytest_detected_from_tox_ini(self):
         r = make_repo({"tox.ini": "[testenv]\ncommands = pytest\n", "setup.py": ""})
         self.assertIn("pytest", [c["id"] for c in baseline.detect_checks(r)])

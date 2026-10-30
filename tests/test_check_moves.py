@@ -149,6 +149,21 @@ class CheckMoves(unittest.TestCase):
         code, out = run_script("check_moves.py", r, "--moves", "z/a.py=z/b.py")
         self.assertEqual(code, 0, out)
 
+    def test_module_collectors_reset_between_calls(self):
+        import sys, check_moves
+        r = make_repo({"src/scss/main.scss": "body{background:url(../img/x.png)}\n", "zz/b.py": ""})
+        argv = sys.argv
+        try:
+            for _ in range(2):
+                sys.argv = ["check_moves.py", str(r), "--moves", "zz/a.py=zz/b.py"]
+                try:
+                    check_moves.main()
+                except SystemExit:
+                    pass
+                self.assertEqual(len(check_moves.UNCERTAIN), 1)
+        finally:
+            sys.argv = argv
+
     def test_no_imports_flag_skips_resolution(self):
         r = make_repo({"src/a/x.ts": "import { y } from './y';\n", "src/a/y.ts": ""})
         moved(r, "src/a/x.ts", "src/b/x.ts")

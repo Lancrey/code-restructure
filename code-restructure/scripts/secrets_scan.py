@@ -31,6 +31,11 @@ not in the repository's history, but they are on disk and can be pasted into a r
 --no-ignored turns this off. --strict with --verify also checks plain-word low-confidence
 values ("sunshine"), at the cost of false alarms on ordinary words.
 
+Known blind spot: a value containing whitespace (PASSWORD = "correct horse battery") is treated
+as prose and never detected, not even with --strict — treating every quoted sentence as a secret
+would drown the result. Passphrases with spaces must be found by reading the config files the
+audit lists.
+
 Exit code: scan 0 (hits are information, not failure); verify 0 clean / 1 leak; 2 usage.
 """
 import argparse
