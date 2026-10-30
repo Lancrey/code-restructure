@@ -8,7 +8,7 @@ A Claude skill (`/restructure`) for architecture audits and safe structural refa
 - `plan`: audit, then design a target layout with an exhaustive relocation table and a migration sequence.
 - `full`: audit, plan, then migrate on a dedicated branch (atomic commits) and verify before/after.
 
-Outputs: an audit report, a migration plan and a validation report, written in the language you choose (English, French, Spanish, German, Italian, Portuguese, Estonian, Chinese or Arabic; the skill asks). Nothing is pushed unless you ask.
+Outputs: an audit report, a migration plan and a validation report, written in the language you choose (English, French, Spanish, German, Italian, Portuguese, Estonian, Russian, Ukrainian, Chinese or Arabic; the skill asks). Nothing is pushed unless you ask.
 
 ## Supported ecosystems
 
