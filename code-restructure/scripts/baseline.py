@@ -304,6 +304,49 @@ def run_check(repo: Path, check, timeout):
     }
 
 
+def _normalise(path, text):
+    """Neutralise what a pure move may legitimately change in built files: source paths in source maps,
+    one-letter identifiers renamed by a minifier, comments carrying file paths."""
+    if path.suffix == ".map":
+        try:
+            m = json.loads(text)
+            for k in ("sources", "sourceRoot", "sourcesContent", "file"):
+                m.pop(k, None)
+            return json.dumps(m, sort_keys=True)
+        except ValueError:
+            return text
+    text = re.sub(r"//[#@] sourceMappingURL=\S+|/\*[#@] sourceMappingURL=\S+ \*/", "", text)
+    text = re.sub(r"/\*[^*]*?(?:src|source|from|file)[^*]*?\*/", "", text)
+    return re.sub(r"(?<![\w$.])[A-Za-z_$](?![\w$])", "_", text)
+
+
+def compare_output(snap, cur, label):
+    rows = []
+    if not snap.is_dir() or not cur.is_dir():
+        rows.append((f"output:{label}", "—" if not snap.is_dir() else "saved", "", "—" if not cur.is_dir() else "built", "", "REGRESSION"))
+        return rows, [f"output:{label}"]
+    a = {str(p.relative_to(snap)) for p in snap.rglob("*") if p.is_file()}
+    b = {str(p.relative_to(cur)) for p in cur.rglob("*") if p.is_file()}
+    same, norm, diff = 0, [], []
+    for f in sorted(a & b):
+        x, y = (snap / f).read_bytes(), (cur / f).read_bytes()
+        if x == y:
+            same += 1
+        elif _normalise(snap / f, x.decode("utf-8", "replace")) == _normalise(cur / f, y.decode("utf-8", "replace")):
+            norm.append(f)
+        else:
+            diff.append(f)
+    missing, new = sorted(a - b), sorted(b - a)
+    verdict = "REGRESSION" if (diff or missing or new) else "same"
+    detail = f"{same} identical, {len(norm)} identical after normalisation, {len(diff)} different, {len(missing)} missing, {len(new)} new"
+    rows.append((f"output:{label}", "saved", "", "built", detail, verdict))
+    for f in (diff + missing + new)[:20]:
+        print(f"  output:{label}  {'different' if f in diff else 'missing' if f in missing else 'new'}: {f}")
+    if norm:
+        print(f"  output:{label}  identical after normalisation (minifier names, source-map paths): {', '.join(norm[:10])}")
+    return rows, ([f"output:{label}"] if verdict == "REGRESSION" else [])
+
+
 def compare(before, after):
     b = {c["id"]: c for c in before.get("checks", [])}
     a = {c["id"]: c for c in after.get("checks", [])}
@@ -356,6 +399,9 @@ def main():
     ap.add_argument("--extra", action="append", default=[], help="extra shell command to run as a check (repeatable)")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per check")
     ap.add_argument("--compare", help="earlier baseline JSON to diff against")
+    ap.add_argument("--compare-output", metavar="DIR", action="append", default=[],
+                    help="build output folder to compare (dist/, build/, public/css): recorded next to --out as <out>.output/ "
+                         "on the first run, compared file by file with --compare (identical / identical after normalisation / different)")
     ap.add_argument("--ref", help="run the checks on this git ref (branch, tag, sha) in a temporary worktree instead of the working tree; "
                                   "use it to record the 'before' baseline after you have already created the migration branch")
     args = ap.parse_args()
@@ -422,7 +468,19 @@ def run(args, repo):
         results.append(r)
         print(f"   {r['status']} (exit {r['exit_code']}, {r['duration_s']}s) {r['counters'] or ''}")
 
-    record = {"repo": str(repo), "git_head": git_head, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"), "checks": results,
+    outputs = {}
+    for d in args.compare_output:
+        src = repo / d
+        if src.is_dir():
+            snap = Path(str(args.out) + ".output") / d
+            if snap.exists():
+                shutil.rmtree(snap)
+            shutil.copytree(src, snap)
+            outputs[d] = sorted(str(p.relative_to(src)) for p in src.rglob("*") if p.is_file())
+        else:
+            outputs[d] = None
+            print(f"note: --compare-output {d}: no such folder after the checks ran (did the build run?)", file=sys.stderr)
+    record = {"repo": str(repo), "git_head": git_head, "outputs": outputs, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"), "checks": results,
               "only": sorted(args.only.split(",")) if args.only else None}
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(record, indent=2), encoding="utf-8")
@@ -441,6 +499,10 @@ def run(args, repo):
             if missing:
                 print(f"note: {', '.join(sorted(missing))} not in the before file — nothing to compare for them", file=sys.stderr)
         rows, regressions = compare(before, record)
+        for d in args.compare_output:
+            r_, bad = compare_output(Path(str(args.compare) + ".output") / d, repo / d, d)
+            rows += r_
+            regressions += bad
         print("\nComparison (before → after):")
         print(f"  {'check':<20} {'before':<8} {'counters':<28} {'after':<8} {'counters':<28} verdict")
         for cid, sb, kb, sa, ka, v in rows:

@@ -108,6 +108,12 @@ class SecretsScan(unittest.TestCase):
         self.assertIn("include/class/log.txt:3 wifi_password = <redacted> [high]", out)
         self.assertNotIn("Ab3dE6gH9k", out)
 
+    def test_lockfiles_and_version_ranges_are_not_secrets(self):
+        r = make_repo({"package-lock.json": '{"node_modules/path-key": {"version": "3.1.1"}, "x": {"path-key": "^3.1.0"}}\n',
+                       "deps.json": '{"js-tokens": "^4.0.0", "api_key": ">=2.0.0"}\n'})
+        code, out = run_script("secrets_scan.py", r, "--all")
+        self.assertIn("no hard-coded secret found", out)
+
     def test_plan_tags_moved_files(self):
         r = self.repo()
         write(r, {"plan.md": "| From | To | Note |\n|---|---|---|\n| config.php | conf/config.php | |\n"})

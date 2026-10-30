@@ -401,7 +401,7 @@ def tokens_for(path):
         segs = p.split("/")
         for i in range(1, len(segs)):
             # only distinctive names: "less/" or "lib/" would match unrelated folders everywhere
-            if len(segs[i]) >= 3 and segs[i] not in GENERIC_NAMES:
+            if len(segs) - i >= 2 or (len(segs[i]) >= 3 and segs[i] not in GENERIC_NAMES):
                 t = "/".join(segs[i:]) + "/"
                 toks.add(t)
                 SUFFIX_TOKENS.add(t)
@@ -506,6 +506,22 @@ def main():
     if plan_rel:
         allow.append(plan_rel)
 
+    # file rows that empty a directory into another one (src/core/math/*.ts -> src/math/*.ts, the usual
+    # result of --expand-globs) also retire the DIRECTORY path: "src/core/math/" in a README or a config is
+    # stale too. Add an implicit directory row when no file is left in the source directory.
+    pairs = {}
+    for frm, to, _ in moves:
+        f, t = frm.strip().rstrip("/"), to.strip().rstrip("/")
+        if os.path.splitext(f)[1] and os.path.splitext(t)[1] and posixpath.basename(f) == posixpath.basename(t):
+            pairs.setdefault((posixpath.dirname(f), posixpath.dirname(t)), 0)
+            pairs[(posixpath.dirname(f), posixpath.dirname(t))] += 1
+    implicit = set()
+    for (fd, td), n in pairs.items():
+        emptied = not (repo / fd).exists() or not any(x.is_file() for x in (repo / fd).rglob("*"))
+        if fd and td and fd != td and emptied and not any(m_[0].strip().rstrip("/") == fd for m_ in moves):
+            moves.append((fd, td, "implicit: directory emptied by the file rows"))
+            implicit.add(fd)
+
     # a From listed several times is a SPLIT (one module becomes several): references to the old
     # location are stale for all of them, and any destination's form counts as "already updated"
     dests = {}
@@ -555,7 +571,23 @@ def main():
             if tok in SUFFIX_TOKENS:
                 if os.path.splitext(rel)[1].lower() in (
                         ".css", ".scss", ".sass", ".less", ".map", ".md", ".mdx", ".rst", ".txt", ".html", ".htm", ".svg"):
-                    continue  # "smarty/" inside a stylesheet or a doc is not the moved include directory
+                    if tok.count("/") < 2:
+                        continue  # "smarty/" in a stylesheet or a doc is too common to mean the moved directory
+                    # "core/math/" (two segments or more) in prose is specific enough: keep it, whatever precedes it
+                    if os.path.splitext(rel)[1].lower() in (".md", ".mdx", ".rst", ".txt"):
+                        if f"{rel}:{ln}" not in allow_lines and not any(nf in line and tok in nf and len(nf) > len(tok) for nf in new_forms):
+                            hits.append({"file": rel, "line": ln, "token": tok, "from": frm, "to": to, "text": line.strip()[:200]})
+                        continue
+                # a relative path literal that resolves on disk from this file is correct, whatever it contains:
+                # '../math/quat' written for the NEW location must not be flagged by the token "math/"
+                q0 = max(line.rfind("'", 0, m.start()), line.rfind('"', 0, m.start()), line.rfind("`", 0, m.start()))
+                if q0 >= 0:
+                    q1 = min([i for i in (line.find("'", m.end()), line.find('"', m.end()), line.find("`", m.end())) if i >= 0] or [len(line)])
+                    lit = line[q0 + 1:q1].split("?")[0].split("#")[0]
+                    if lit.startswith(("./", "../")):
+                        target = posixpath.normpath(posixpath.join(posixpath.dirname(rel), lit))
+                        if (repo / target).exists() or js_resolves(repo, target):
+                            continue
                 # a path relative to a base constant starts the string: CONST . 'phpexcel/x.php', "../smarty/";
                 # '/smarty/config' after another folder variable is some other smarty/ directory
                 pre = line[max(0, m.start() - 3):m.start()]
@@ -587,7 +619,7 @@ def main():
     table_problems, pending = [], set()
     for frm, to, _ in moves:
         f, t = frm.strip().rstrip("/"), to.strip().rstrip("/")
-        if f == t:
+        if f == t or f in implicit:
             continue
         if any(ch in f for ch in "*?[]"):
             left = [str(p.relative_to(repo)) for p in repo.glob(f) if p.is_file()]
@@ -711,6 +743,8 @@ def main():
             print("  Run the same command on the original commit: anything unresolved there too is pre-existing and not yours.")
 
     if not hits:
+        if implicit:
+            print(f"(also checked the directory path of {len(implicit)} emptied folder(s): {', '.join(sorted(implicit))})")
         if tokens:
             print(f"No stale references found for {len(moves)} relocation rows ({len(tokens)} search tokens).")
         else:

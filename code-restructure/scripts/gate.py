@@ -58,6 +58,8 @@ def main():
     mode.add_argument("--final", action="store_true")
     ap.add_argument("--only", help="baseline.py --only, must be the same in every call")
     ap.add_argument("--extra", action="append", default=[], help="baseline.py --extra, repeatable, must be the same in every call")
+    ap.add_argument("--compare-output", action="append", default=[], metavar="DIR",
+                    help="baseline.py --compare-output: build output folder compared file by file (dist/ of a published package)")
     ap.add_argument("--allow", action="append", default=[], help="check_moves.py --allow, repeatable (compatibility shims)")
     ap.add_argument("--ref", help="record the 'before' baseline from this git ref (worktree) instead of the working tree")
     args = ap.parse_args()
@@ -67,7 +69,8 @@ def main():
     plan = Path(args.plan) if Path(args.plan).is_absolute() else repo / args.plan
     ev = report_dir / "restructure-evidence"
     ev.mkdir(parents=True, exist_ok=True)
-    base_args = (["--only", args.only] if args.only else []) + [a for x in args.extra for a in ("--extra", x)]
+    base_args = (["--only", args.only] if args.only else []) + [a for x in args.extra for a in ("--extra", x)] \
+        + [a for x in args.compare_output for a in ("--compare-output", x)]
     allow_args = [a for x in args.allow for a in ("--allow", x)]
     verdicts = {}
 

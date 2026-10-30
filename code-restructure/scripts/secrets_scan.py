@@ -60,6 +60,9 @@ BINARY_EXT = {
 }
 TOP_LEVEL_EXCLUDE = {"dist", "build", "out", "target"}  # build outputs, only at the repo root
 MAX_BYTES = 2_000_000
+LOCKFILES = {"package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "composer.lock",
+             "Cargo.lock", "Gemfile.lock", "poetry.lock", "Pipfile.lock", "uv.lock", "go.sum", "pubspec.lock", "mix.lock",
+             "Podfile.lock", "packages.lock.json", "gradle.lockfile", "flake.lock"}
 IGNORED = set()  # git-ignored files seen by the last iter_files call (CLI use; reset at each call)
 
 NAME_WORDS = (r"secret|passw(?:or)?d|pwd|passphrase|token|salt|credential|api[_-]?key|"
@@ -99,6 +102,8 @@ def clean_name(n):
 def confidence(val):
     if re.search(r"\s", val):
         return None  # prose, not a secret
+    if re.match(r"^(?:[\^~]|[<>]=?|=)?v?\d+(?:\.(?:\d+|x|\*)){1,3}(?:-[0-9A-Za-z.]+)?$", val):
+        return None  # a version or semver range (^3.1.0, ~1.2, >=2.0.0): not a secret
     if re.match(r"^[a-z][a-z0-9+.\-]*://", val, re.I) and "@" not in val:
         return "low"  # a URL without credentials (TOKEN_URL, AUTH_ENDPOINT…)
     if re.match(r"^[/~.]|^[A-Za-z]:\\", val) and not re.search(r"\d", val):
@@ -142,8 +147,8 @@ def iter_files(repo, excludes, include_ignored=True):
         if any(p == "vendor" and (i == 0 or any((repo.joinpath(*parts[:i]) / m).is_file() for m in ("composer.json", "go.mod", "Gemfile")))
                for i, p in enumerate(parts[:-1])):
             continue
-        if os.path.splitext(rel)[1].lower() in BINARY_EXT:
-            continue
+        if os.path.splitext(rel)[1].lower() in BINARY_EXT or os.path.basename(rel) in LOCKFILES:
+            continue  # lockfiles: package names (path-key, js-tokens) and version ranges, never secrets
         if any(fnmatch.fnmatch(rel, g) for g in excludes):
             continue
         yield rel

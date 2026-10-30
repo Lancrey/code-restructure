@@ -192,6 +192,27 @@ class CheckMoves(unittest.TestCase):
         self.assertIn("L3", out)
         self.assertNotIn("L4", out)
 
+    def test_emptied_directory_path_is_checked_and_correct_relative_imports_are_not(self):
+        files = {f"src/core/math/{n}.ts": f"export const {n} = 1;\n" for n in ("vec3", "quat", "mat4")}
+        files.update({"src/poly/a.ts": "import { quat } from '../core/math/quat';\n", "src/core/other/x.ts": "",
+                      "CONTRIBUTING.md": "See src/core/math/ for vectors.\nThe core/math/ folder.\nThe math/ word.\n",
+                      "plan.md": "| From | To | Note |\n|---|---|---|\n" + "".join(
+                          f"| src/core/math/{n}.ts | src/math/{n}.ts | |\n" for n in ("vec3", "quat", "mat4"))})
+        r = make_repo(files)
+        for n in ("vec3", "quat", "mat4"):
+            moved(r, f"src/core/math/{n}.ts", f"src/math/{n}.ts")
+        write(r, {"src/poly/a.ts": "import { quat } from '../math/quat';\nimport { vec3 } from '../math/vec3';\n"})
+        code, out = run_script("check_moves.py", r, "--plan", "plan.md", "--allow", "plan.md")
+        self.assertEqual(code, 1, out)
+        self.assertIn("L1     [src/core/math]", out)
+        self.assertIn("L2     [core/math/]", out)
+        self.assertNotIn("L3", out)          # "math/" alone in prose: too common
+        self.assertNotIn("src/poly/a.ts", out)  # '../math/quat' resolves to the new file: correct
+        code, out = run_script("check_moves.py", r, "--plan", "plan.md", "--allow", "plan.md",
+                               "--allow", "CONTRIBUTING.md:1", "--allow", "CONTRIBUTING.md:2")
+        self.assertEqual(code, 0, out)
+        self.assertIn("emptied folder", out)
+
     def test_nested_vendor_without_manifest_is_source(self):
         r = make_repo({"old/one.py": "", "development/vendor/tool/x.js": "// old/one.py\n", "vendor/dep/y.js": "// old/one.py\n"})
         moved(r, "old/one.py", "new/one.py")

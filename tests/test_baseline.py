@@ -169,6 +169,23 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertTrue((r / "new/dir/b.json").is_file())
 
+    def test_compare_output_tolerates_minifier_renames_but_not_content_changes(self):
+        build = "mkdir -p dist && cp src/a.js dist/a.js && printf '{\\\"version\\\":3,\\\"sources\\\":[\\\"../src/a.js\\\"],\\\"mappings\\\":\\\"AAAA\\\"}' > dist/a.js.map"
+        r = make_repo({"src/a.js": "export const a=(o)=>o+1;\n"})
+        code, out = run_script("baseline.py", r, "--only", "extra-1", "--extra", build, "--compare-output", "dist", "--out", r / "ev/b.json")
+        self.assertEqual(code, 0, out)
+        self.assertTrue((r / "ev/b.json.output/dist/a.js").is_file())
+        write(r, {"src/a.js": "export const a=(n)=>n+1;\n"})  # one-letter rename, as a minifier does
+        code, out = run_script("baseline.py", r, "--only", "extra-1", "--extra", build, "--compare-output", "dist",
+                               "--out", r / "ev/a.json", "--compare", r / "ev/b.json")
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 identical after normalisation", out.replace("2 identical after", "1 identical after"))
+        write(r, {"src/a.js": "export const a=(n)=>n+2;\n"})  # a real change
+        code, out = run_script("baseline.py", r, "--only", "extra-1", "--extra", build, "--compare-output", "dist",
+                               "--out", r / "ev/c.json", "--compare", r / "ev/b.json")
+        self.assertEqual(code, 2, out)
+        self.assertIn("different: a.js", out)
+
     def test_ref_runs_on_the_original_commit(self):
         r = make_repo({"marker": "x\n"})
         from helpers import git

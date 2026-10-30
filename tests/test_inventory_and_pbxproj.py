@@ -25,6 +25,14 @@ class Inventory(unittest.TestCase):
         code, out = run_script("inventory.py", r, "--out", r / "inv.json")
         self.assertIn("1 of them inside plugin/vendor/lib folders", out)
 
+    def test_tsup_config_and_frontend_summary(self):
+        r = make_repo({"tsup.config.ts": "export default {}\n", "src/index.ts": "", "src/styles.css": "", "examples/a.html": ""})
+        code, out = run_script("inventory.py", r, "--out", r / "inv.json")
+        data = json.loads((r / "inv.json").read_text())
+        self.assertIn("tsup.config.ts", data["path_pinning_files"]["bundler"])
+        self.assertTrue(data["frontend"]["load_frontend_reference"])
+        self.assertIn("load references/frontend-assets.md", out)
+
     def test_build_dir_excluded_only_at_root(self):
         r = make_repo({"internal/build/b.go": "x\n", "dist/x.js": "y\n"})
         run_script("inventory.py", r, "--out", r / "ev/inv.json")  # new directory created on the fly

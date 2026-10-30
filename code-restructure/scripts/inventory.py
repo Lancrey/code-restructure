@@ -68,6 +68,8 @@ PATH_PINNING_FILES = {
     "typescript": ["tsconfig.json", "tsconfig.*.json", "jsconfig.json"],
     "bundler": [
         "vite.config.*", "webpack.config.*", "rollup.config.*", "esbuild.*", "next.config.*",
+        "tsup.config.*", "tsdown.config.*", "build.config.*", "rspack.config.*", "rsbuild.config.*", ".parcelrc",
+        "farm.config.*", "rolldown.config.*", "snowpack.config.*", "metro.config.*", "electron-builder.*",
         "nuxt.config.*", "astro.config.*", "svelte.config.*", "angular.json", "nest-cli.json",
         "babel.config.*", ".babelrc", "webpack.mix.js", "tailwind.config.*", "postcss.config.*",
         "manifest.json",
@@ -361,6 +363,17 @@ def main():
     print("Code languages (files / lines):")
     for lang, n in code_langs[:6]:
         print(f"  {lang:<14} {n:>6} / {lang_lines[lang]:>8}")
+    asset_counts = Counter()
+    for rel, lang, _ in files:
+        if lang in ("CSS", "SCSS", "Less", "HTML", "Twig", "Blade") or rel.endswith((".tpl", ".sass", ".vue", ".svelte", ".astro", ".jinja", ".ejs", ".hbs", ".njk")):
+            asset_counts[os.path.splitext(rel)[1].lstrip(".") if not rel.endswith(".blade.php") else "blade.php"] += 1
+    asset_dirs = sorted({p for rel in rel_files for p in Path(rel).parts[:-1] if p.lower() in ("img", "images", "fonts", "static", "public", "assets")})
+    inventory["frontend"] = {"files_by_ext": dict(asset_counts), "asset_dirs": asset_dirs,
+                             "load_frontend_reference": bool(asset_counts or asset_dirs)}
+    Path(args.out).write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+    if asset_counts or asset_dirs:
+        print("Stylesheets/templates/assets: " + (", ".join(f"{n} {e}" for e, n in asset_counts.most_common()) or "none")
+              + (f"; asset folders: {', '.join(asset_dirs)}" if asset_dirs else "") + "  → load references/frontend-assets.md")
     print(f"Test files: {len(test_files)}" + (f" — {len(test_files_vendored)} of them inside plugin/vendor/lib folders, "
           f"probably not the project's own tests" if test_files_vendored else ""))
     print("Path-pinning files:")
