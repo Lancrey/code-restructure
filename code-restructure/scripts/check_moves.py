@@ -82,8 +82,19 @@ CSS_IMPORT = re.compile(r"""@(?:import|use|forward)\s+(?:\(reference\)\s*|\(css\
 HTML_ATTR = re.compile(r"""\b(src|href|srcset|poster|data-src|xlink:href)\s*=\s*(["'])(?!(?:https?:|//|/|#|mailto:|tel:|data:|javascript:|\{|\$|<\?|%|\s*$))([^"']+)\2""", re.I)
 
 
-def style_resolves(repo, importer, spec, kind):
-    """Relative CSS/Sass/Less reference -> does it name a file on disk? Load paths are not known here."""
+def _style_candidates(base, exts):
+    d, n = posixpath.dirname(base), posixpath.basename(base)
+    for e in exts:
+        yield from (posixpath.join(d, n + e), posixpath.join(d, "_" + n + e), posixpath.join(base, "_index" + e), posixpath.join(base, "index" + e))
+
+
+def style_resolves(repo, importer, spec, kind, lang=None):
+    """Relative CSS/Sass/Less reference -> True (on disk), False (missing), or "uncertain" (needs the compiler).
+
+    `lang` overrides the language taken from the importer's extension (a `<style lang="scss">` block
+    in a .vue file). Load paths are not known here; npm packages are resolved inside node_modules
+    with the same partial/index conventions, and a bare package name (`@use "pkg"`) whose entry point
+    would come from package.json is "uncertain"."""
     spec = spec.split("?")[0].split("#")[0]
     if not spec or spec.startswith("/"):
         return True  # root-relative: a deployment path, not checkable from the tree
@@ -92,20 +103,22 @@ def style_resolves(repo, importer, spec, kind):
         return True
     if kind != "import":
         return False
-    ext_i = os.path.splitext(importer)[1].lower()
+    ext_i = "." + lang if lang else os.path.splitext(importer)[1].lower()
     exts = (".scss", ".sass", ".css") if ext_i in (".scss", ".sass") else (".less", ".css") if ext_i == ".less" else (".css",)
-    d, n = posixpath.dirname(base), posixpath.basename(base)
-    for e in exts:
-        for c in (posixpath.join(d, n + e), posixpath.join(d, "_" + n + e), posixpath.join(base, "_index" + e), posixpath.join(base, "index" + e)):
-            if (repo / c).is_file():
-                return True
-    # a bare Sass/Less specifier may name an npm package (`@use "bootstrap/scss/bootstrap"`): accept it only
-    # when that package directory exists in node_modules, not merely because node_modules exists
+    if any((repo / c).is_file() for c in _style_candidates(base, exts)):
+        return True
+    # a bare Sass/Less specifier may name an npm package (`@use "bootstrap/scss/bootstrap"`)
     if not spec.startswith(".") and ext_i in (".scss", ".sass", ".less"):
         segs = spec.lstrip("~").split("/")
         pkg = "/".join(segs[:2]) if segs[0].startswith("@") and len(segs) > 1 else segs[0]
-        if (repo / "node_modules" / pkg).is_dir():
-            return True
+        pkg_dir = repo / "node_modules" / pkg
+        if pkg_dir.is_dir():
+            inside = posixpath.join("node_modules", spec.lstrip("~"))
+            if (repo / inside).is_file() or any((repo / c).is_file() for c in _style_candidates(inside, exts)):
+                return True
+            if spec.lstrip("~") == pkg:
+                return "uncertain"  # entry point declared in package.json ("sass"/"style"/"main"): the compiler knows, we don't
+            return False  # the package is there, the file inside it is not
     return False
 
 
@@ -203,6 +216,7 @@ def init_binds(name, init_txt):
 
 
 UNCERTAIN = []  # (file, line, spec): references this script cannot settle either way
+UNCERTAIN_TPL = []  # relative asset paths in server-rendered templates (resolve against the route, not the file)
 
 
 def hint_for(moved_hint, importer, spec):
@@ -229,6 +243,8 @@ def unresolved_relative_imports(repo, files, moved_hint, dests=()):
         if rel.endswith(".blade.php"):
             ext = ".html"
         sfc = ext in (".vue", ".svelte", ".astro")  # script + template + style in one file: check all three
+        is_template = ext in HTML_EXT and ext not in (".html", ".htm", ".xhtml") and not sfc
+        style_lang = None  # language of the current <style lang="…"> block in an SFC
         if ext not in JS_SRC and ext != ".py" and ext not in STYLE_EXT and ext not in HTML_EXT:
             continue
         try:
@@ -236,18 +252,31 @@ def unresolved_relative_imports(repo, files, moved_hint, dests=()):
         except OSError:
             continue
         for ln, line in enumerate(text.splitlines(), 1):
+            if sfc:
+                ms = re.search(r"<style\b[^>]*\blang\s*=\s*[\"']?(scss|sass|less|postcss|css)", line, re.I)
+                if ms:
+                    style_lang = ms.group(1).lower()
+                elif re.search(r"<style\b", line, re.I):
+                    style_lang = "css"
+                if re.search(r"</style>", line, re.I):
+                    pass  # reset after processing this line (below)
             if ext in STYLE_EXT or sfc:
                 for m in CSS_URL.finditer(line):
                     if not style_resolves(repo, rel, m.group(1), "url"):
-                        if ext in (".scss", ".sass", ".less"):
+                        if ext in (".scss", ".sass", ".less") or style_lang in ("scss", "sass", "less"):
                             # Sass copies url() verbatim: it resolves against the COMPILED css, whose location this
                             # script does not know. Not resolving from the source is a doubt, not a verdict.
                             UNCERTAIN.append((rel, ln, "url(%s)" % m.group(1)))
                         else:
                             out.append((rel, ln, "url(%s)" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
                 for m in CSS_IMPORT.finditer(line):
-                    if not style_resolves(repo, rel, m.group(1), "import"):
+                    res = style_resolves(repo, rel, m.group(1), "import", lang=style_lang if sfc else None)
+                    if res == "uncertain":
+                        UNCERTAIN.append((rel, ln, "@import %s (package entry point from package.json)" % m.group(1)))
+                    elif not res:
                         out.append((rel, ln, "@import %s" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
+                if sfc and re.search(r"</style>", line, re.I):
+                    style_lang = None
                 if not sfc:
                     continue
             if ext in HTML_EXT or sfc:
@@ -255,7 +284,12 @@ def unresolved_relative_imports(repo, files, moved_hint, dests=()):
                     tags = re.findall(r"<([A-Za-z][\w:-]*)", line[:m.start()])
                     tag = tags[-1].lower() if tags else ""
                     for bad in html_unresolved(repo, rel, m.group(1).lower(), m.group(3), tag):
-                        out.append((rel, ln, f"{m.group(1)}={bad}"[:80], hint_for(moved_hint, rel, bad)))
+                        if is_template:
+                            # a server-rendered template is addressed by its ROUTE, not its file location:
+                            # a relative asset path resolves against the URL, which this script does not know
+                            UNCERTAIN_TPL.append((rel, ln, f"{m.group(1)}={bad}"[:80]))
+                        else:
+                            out.append((rel, ln, f"{m.group(1)}={bad}"[:80], hint_for(moved_hint, rel, bad)))
                 if not sfc:  # inline style="…url()" and <style> blocks: plain CSS, relative to the page
                     for m in CSS_URL.finditer(line):
                         if not style_resolves(repo, rel, m.group(1), "url"):
@@ -541,15 +575,34 @@ def main():
         except (OSError, ValueError) as e:
             print(f"--before file unreadable: {e}", file=sys.stderr)
             sys.exit(2)
-        seen_before = {(u["file"], u["spec"]) for u in prev.get("unresolved_relative_imports", [])}
+        seen_before = set()
+        for u in prev.get("unresolved_relative_imports", []):
+            seen_before.add((u["file"], u["spec"]))
+            # the file may have moved since: the same broken reference now lives at the destination
+            for frm, to, _ in moves:
+                f, t = frm.strip().rstrip("/"), to.strip().rstrip("/")
+                if any(ch in f + t for ch in "*?[]<>"):
+                    continue
+                if u["file"] == f:
+                    seen_before.add((t, u["spec"]))
+                elif u["file"].startswith(f + "/"):
+                    seen_before.add((posixpath.join(t, u["file"][len(f) + 1:]), u["spec"]))
         new_since_before = [b for b in unrelated if (b[0], b[2]) not in seen_before]
         unrelated = [b for b in unrelated if (b[0], b[2]) in seen_before]
+        # a reference already broken in the file BEFORE it moved is pre-existing, not caused by the move
+        still_caused = []
+        for b in caused:
+            if b[3] == "(this file was moved)" and (b[0], b[2]) in seen_before:
+                unrelated.append(b)
+            else:
+                still_caused.append(b)
+        caused = still_caused
 
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps({"stale": hits, "relocation_table": table_problems, "unresolved_relative_imports": [
             {"file": f, "line": l, "spec": s_, "moved_to": h} for f, l, s_, h in broken],
-            "uncertain": [{"file": f, "line": l, "spec": s_} for f, l, s_ in UNCERTAIN]}, indent=2), encoding="utf-8")
+            "uncertain": [{"file": f, "line": l, "spec": s_} for f, l, s_ in UNCERTAIN + UNCERTAIN_TPL]}, indent=2), encoding="utf-8")
 
     if table_problems:
         print(f"{len(table_problems)} relocation-table row(s) disagree with the disk:")
@@ -562,8 +615,14 @@ def main():
             print(f"\n{len(new_since_before)} relative reference(s) unresolved now and resolved on the original commit, not explained by the plan — a move the plan does not list, or a path edit gone wrong:")
             for f, l, s_, h in sorted(new_since_before)[:80]:
                 print(f"  {f}:{l}  {s_}")
+        if UNCERTAIN_TPL:
+            print(f"\n{len(UNCERTAIN_TPL)} relative asset path(s) in server-rendered templates do not resolve from the template's location; they resolve against the page URL, which this script does not know — check them in a browser or with the framework's asset helper:")
+            for f, l, s_ in sorted(UNCERTAIN_TPL)[:10]:
+                print(f"  {f}:{l}  {s_}")
+            if len(UNCERTAIN_TPL) > 10:
+                print(f"  … {len(UNCERTAIN_TPL) - 10} more")
         if UNCERTAIN:
-            print(f"\n{len(UNCERTAIN)} url() in Sass/Less sources do not resolve from the source file; they resolve against the compiled CSS, which this script cannot locate — compare the compiled output instead:")
+            print(f"\n{len(UNCERTAIN)} Sass/Less reference(s) this script cannot settle (url() resolves against the compiled CSS; a bare package entry point comes from package.json) — compare the compiled output instead:")
             for f, l, s_ in sorted(UNCERTAIN)[:10]:
                 print(f"  {f}:{l}  {s_}")
             if len(UNCERTAIN) > 10:

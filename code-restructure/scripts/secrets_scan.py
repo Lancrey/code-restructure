@@ -297,7 +297,19 @@ def main():
     if not repo.is_dir():
         print("repo not found", file=sys.stderr)
         sys.exit(2)
-    hits = scan_repo(repo, args.exclude, include_ignored=not args.no_ignored)
+    excludes = list(args.exclude)
+    if args.verify:
+        # the reports and the evidence folder are the TARGETS of the check, not sources of secrets:
+        # a path quoted in references-*.json must not become a "secret value" to look for
+        for t in args.verify:
+            for p_ in ([Path(t)] if not any(ch in t for ch in "*?[") else []) + [Path(x) for x in __import__("glob").glob(t)]:
+                p_ = p_ if p_.is_absolute() else (Path.cwd() / p_ if (Path.cwd() / p_).exists() else repo / p_)
+                try:
+                    rel = p_.resolve().relative_to(repo)
+                except ValueError:
+                    continue
+                excludes += [str(rel), str(rel) + "/*"]
+    hits = scan_repo(repo, excludes, include_ignored=not args.no_ignored)
 
     if args.verify:
         leaks, nfiles, nvals = verify(repo, hits, args.verify, strict=args.strict)

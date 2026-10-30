@@ -67,7 +67,7 @@ class FrontendAssets(unittest.TestCase):
         r = make_repo({"src/scss/main.scss": "body{background:url(../img/bg.png)}\n", "public/img/bg.png": "", "zz/b.py": ""})
         code, out = run_script("check_moves.py", r, "--moves", "zz/a.py=zz/b.py")
         self.assertEqual(code, 0, out)
-        self.assertIn("resolve against the compiled CSS", out)
+        self.assertIn("resolves against the compiled CSS", out)
         self.assertIn("src/scss/main.scss:1  url(../img/bg.png)", out)
 
     def test_template_routes_are_not_files(self):
@@ -109,6 +109,38 @@ class FrontendAssets(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("| plugins/a.py | src/plugins/a/main.py |", out)
         self.assertIn("| plugins/b.py | src/plugins/b/main.py |", out)
+
+    def test_package_present_but_file_missing_is_unresolved(self):
+        r = make_repo({"scss/main.scss": '@use "bootstrap/scss/bootstrap";\n@use "bootstrap/scss/nope";\n@use "bootstrap";\n',
+                       "node_modules/bootstrap/scss/_bootstrap.scss": "", "zz/b.py": ""})
+        code, out = run_script("check_moves.py", r, "--moves", "zz/a.py=zz/b.py", "--all-unresolved")
+        self.assertIn("@import bootstrap/scss/nope", out)
+        self.assertIn("@import bootstrap (package entry point", out)  # uncertain, not broken
+        self.assertNotIn("@import bootstrap/scss/bootstrap", out)
+
+    def test_vue_style_lang_scss_resolves_partials(self):
+        r = make_repo({"comp/A.vue": '<template><img src="./logo.png"></template>\n<style lang="scss">\n@use "./tokens/colors";\n@use "./tokens/missing";\n</style>\n',
+                       "comp/tokens/_colors.scss": "", "comp/logo.png": "", "zz/b.py": ""})
+        code, out = run_script("check_moves.py", r, "--moves", "zz/a.py=zz/b.py", "--all-unresolved")
+        self.assertNotIn("tokens/colors", out)
+        self.assertIn("@import ./tokens/missing", out)
+
+    def test_template_relative_assets_are_uncertain_not_broken(self):
+        r = make_repo({"templates/page.twig": '<img src="img/x.png"> <link rel="stylesheet" href="css/a.css">\n', "zz/b.py": ""})
+        code, out = run_script("check_moves.py", r, "--moves", "zz/a.py=zz/b.py")
+        self.assertEqual(code, 0, out)
+        self.assertIn("server-rendered templates", out)
+        self.assertIn("src=img/x.png", out)
+
+    def test_preexisting_break_in_a_moved_file_is_not_blamed_on_the_move(self):
+        r = make_repo({"css/site.css": "a{background:url(../img/gone.png)}\n", "zz/b.py": ""})
+        code, out = run_script("check_moves.py", r, "--moves", "zz/a.py=zz/b.py", "--json", r / "before.json")
+        (r / "assets").mkdir()
+        git(r, "mv", "css", "assets/css")  # move the whole directory, as the plan row says
+        code, out = run_script("check_moves.py", r, "--moves", "css=assets/css", "--before", r / "before.json", "--allow", "before.json")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("broken by the listed moves", out)
+        self.assertIn("assets/css/site.css:1  url(../img/gone.png)", out)
 
 
 if __name__ == "__main__":
