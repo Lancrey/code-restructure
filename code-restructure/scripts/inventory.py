@@ -345,6 +345,7 @@ def main():
         "test_file_count": len(test_files),
         "tree": tree,
     }
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(inventory, indent=2), encoding="utf-8")
 
     print(f"Repository: {repo}  (git: {is_git})")

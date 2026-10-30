@@ -22,8 +22,8 @@ class Inventory(unittest.TestCase):
 
     def test_build_dir_excluded_only_at_root(self):
         r = make_repo({"internal/build/b.go": "x\n", "dist/x.js": "y\n"})
-        run_script("inventory.py", r, "--out", r / "inv.json")
-        data = json.loads((r / "inv.json").read_text())
+        run_script("inventory.py", r, "--out", r / "ev/inv.json")  # new directory created on the fly
+        data = json.loads((r / "ev/inv.json").read_text())
         self.assertEqual(data["excluded_dirs"], ["dist"])
         self.assertEqual(data["file_count"], 1)
 
@@ -86,6 +86,10 @@ class Pbxproj(unittest.TestCase):
         code, out = run_script("pbxproj_check.py", r)
         self.assertEqual(code, 3, out)
         self.assertIn("NOT VERIFIED", out)
+
+    def test_no_project_is_exit_3(self):
+        code, out = run_script("pbxproj_check.py", make_repo({"a.txt": "x\n"}))
+        self.assertEqual(code, 3, out)
 
     def test_unreferenced_file_detected(self):
         r = self.repo()

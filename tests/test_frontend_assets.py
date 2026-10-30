@@ -1,5 +1,5 @@
 import unittest
-from helpers import make_repo, git, run_script, write
+from helpers import make_repo, git, run_script
 
 
 def moved(root, src, dst):

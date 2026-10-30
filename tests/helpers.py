@@ -1,9 +1,6 @@
-import json
-import os
 import subprocess
 import sys
 import tempfile
-import unittest
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "code-restructure" / "scripts"

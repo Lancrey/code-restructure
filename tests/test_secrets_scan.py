@@ -69,6 +69,22 @@ class SecretsScan(unittest.TestCase):
         code, out = run_script("secrets_scan.py", r, "--no-ignored", "--all")
         self.assertNotIn(".env", out)
 
+    def test_keyword_must_start_a_word_part(self):
+        r = make_repo({"s.py": 'monkey = "abcdef123456"\ndonkey = "abcdef123456"\napiKey = "abcdef123456"\n'
+                               'SESSKEY = "abcdef123456"\nkeyboard = "abcdef123456"\n', "docs/a.md": "x\n"})
+        code, out = run_script("secrets_scan.py", r, "--all")
+        self.assertNotIn("monkey", out)
+        self.assertNotIn("donkey", out)
+        self.assertNotIn("keyboard", out)
+        self.assertIn("apiKey", out)
+        self.assertIn("SESSKEY", out)
+
+    def test_verify_glob_without_match_is_not_an_error(self):
+        r = make_repo({"s.py": 'API_KEY = "abcdef123456"\n', "docs/a.md": "x\n"})
+        code, out = run_script("secrets_scan.py", r, "--verify", "docs/architecture-*.md", str(r / "docs"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("no file matches", out)
+
     def test_plan_tags_moved_files(self):
         r = self.repo()
         write(r, {"plan.md": "| From | To | Note |\n|---|---|---|\n| config.php | conf/config.php | |\n"})

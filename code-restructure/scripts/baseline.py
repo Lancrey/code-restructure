@@ -17,7 +17,9 @@ Rules it follows:
   - never modifies the repository; everything runs from the repo root
   - a check that fails BEFORE the migration is recorded as pre-existing, not as a regression
   - counters (test counts, lint findings) are parsed from output where the runner's format is known
-  - with --compare: exit 2 on a regression, exit 2 if the "before" file is missing or no check ran
+  - with --compare: exit 2 on a regression, exit 2 if the "before" file is missing or no check ran;
+    a check present before and absent after is a regression, unless --only restricts the run, in
+    which case only the selected ids are compared (use the same --only on both sides, or none)
 
 Caveat for --ref: the checks run in a temporary git worktree, so anything installed from
 the working tree is NOT there — node_modules, a virtualenv, `pip install -e .` (an editable
@@ -388,7 +390,10 @@ def run(args, repo):
             return
 
     if not checks:
-        print("no check to run: nothing was detected for this repo and no --extra command was given", file=sys.stderr)
+        if args.only:
+            print(f"no check to run: --only {args.only} matches none of the detected checks (see --list)", file=sys.stderr)
+        else:
+            print("no check to run: nothing was detected for this repo and no --extra command was given", file=sys.stderr)
         sys.exit(2)
     if args.compare and not Path(args.compare).is_file():
         print(f"--compare file not found: {args.compare}", file=sys.stderr)
@@ -407,7 +412,9 @@ def run(args, repo):
         results.append(r)
         print(f"   {r['status']} (exit {r['exit_code']}, {r['duration_s']}s) {r['counters'] or ''}")
 
-    record = {"repo": str(repo), "git_head": git_head, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"), "checks": results}
+    record = {"repo": str(repo), "git_head": git_head, "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"), "checks": results,
+              "only": sorted(args.only.split(",")) if args.only else None}
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps(record, indent=2), encoding="utf-8")
     print(f"Baseline written to {Path(args.out).resolve()}")
 
@@ -416,6 +423,13 @@ def run(args, repo):
         if not before.get("checks"):
             print(f"--compare file has no checks: {args.compare}", file=sys.stderr)
             sys.exit(2)
+        if args.only:
+            # a subset run compares only that subset: checks left out on purpose are not "vanished"
+            wanted = set(args.only.split(","))
+            before = {**before, "checks": [c for c in before.get("checks", []) if c["id"] in wanted]}
+            missing = wanted - {c["id"] for c in before["checks"]}
+            if missing:
+                print(f"note: {', '.join(sorted(missing))} not in the before file — nothing to compare for them", file=sys.stderr)
         rows, regressions = compare(before, record)
         print("\nComparison (before → after):")
         print(f"  {'check':<20} {'before':<8} {'counters':<28} {'after':<8} {'counters':<28} verdict")

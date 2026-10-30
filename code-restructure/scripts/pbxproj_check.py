@@ -11,7 +11,7 @@ Works on any OS (no Xcode needed). Heuristic, text-based parsing of the old-styl
 plist; projects with synchronized folders (objectVersion >= 77) are reported as
 such and skipped, since they follow the disk.
 
-Usage: python3 pbxproj_check.py <repo>      exit 0 = consistent, 1 = problems, 3 = not verifiable here
+Usage: python3 pbxproj_check.py <repo>      exit 0 = consistent, 1 = problems, 3 = nothing verifiable here (no project, or synchronized folders)
 """
 import re
 import sys
@@ -103,8 +103,8 @@ def main():
     unverified = 0
     projects = sorted(repo.glob("**/*.xcodeproj"))
     if not projects:
-        print("no .xcodeproj found")
-        return
+        print("no .xcodeproj found — nothing to verify")
+        sys.exit(3)
     for proj in projects:
         pbx = proj / "project.pbxproj"
         if not pbx.exists():

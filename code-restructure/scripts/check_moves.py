@@ -492,6 +492,7 @@ def main():
     unrelated = [b for b in broken if not b[3]]
 
     if args.json:
+        Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps({"stale": hits, "relocation_table": table_problems, "unresolved_relative_imports": [
             {"file": f, "line": l, "spec": s_, "moved_to": h} for f, l, s_, h in broken]}, indent=2), encoding="utf-8")
 

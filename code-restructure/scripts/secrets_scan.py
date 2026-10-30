@@ -54,12 +54,14 @@ BINARY_EXT = {
 }
 TOP_LEVEL_EXCLUDE = {"dist", "build", "out", "target"}  # build outputs, only at the repo root
 MAX_BYTES = 2_000_000
-IGNORED = set()  # git-ignored files that were scanned (filled by iter_files)
+IGNORED = set()  # git-ignored files seen by the last iter_files call (CLI use; reset at each call)
 
 NAME_WORDS = (r"secret|passw(?:or)?d|pwd|passphrase|token|salt|credential|api[_-]?key|"
               r"private[_-]?key|access[_-]?key|crypto|key")
 # (?-i:(?![a-z])) rejects a lowercase continuation ("keyboard", "tokenizer") but accepts camelCase ("passwordHash")
-NAME_RX = r"""[A-Za-z0-9_.\-]*(?:%s)(?-i:(?![a-z]))[A-Za-z0-9_.\-]*""" % NAME_WORDS
+# the keyword must start a word part: preceded by nothing/_/-/./digit, or written in CamelCase (apiKey) —
+# so "monkey", "donkey", "turkey" are not secrets, while API_KEY, apiKey, SESSKEY, passwordHash are
+NAME_RX = r"""[A-Za-z0-9_.\-]*?(?:(?<![A-Za-z])|(?-i:(?=[A-Z])))(?:%s)(?-i:(?![a-z]))[A-Za-z0-9_.\-]*""" % NAME_WORDS
 ASSIGN = re.compile(
     r"""(?P<name>["']?%s["']?)\s*(?:=>|=|:|,)\s*(?:[A-Za-z_]\w*\(\s*)?(?P<q>["'])(?P<val>[^"'\n]{6,})(?P=q)""" % NAME_RX, re.I)
 # YAML / unquoted mapping value:  MYSQL_ROOT_PASSWORD: s3cr3t   (also "- KEY=value" list items in compose files)
@@ -113,6 +115,7 @@ def iter_files(repo, excludes, include_ignored=True):
         out = subprocess.run(["git", "-C", str(repo), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                              capture_output=True, text=True, check=True, timeout=120).stdout
         rels = [r for r in out.split("\0") if r]
+        IGNORED.clear()
         if include_ignored:
             ign = subprocess.run(["git", "-C", str(repo), "ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
                                  capture_output=True, text=True, check=True, timeout=120).stdout
@@ -240,7 +243,17 @@ def verify(repo, hits, targets, strict=False):
             values.setdefault(val, f"{name}")
     leaks = []
     files = []
+    import glob as globmod
+    expanded = []
     for t in targets:
+        if any(ch in t for ch in "*?["):  # a glob the shell did not expand (no match yet): not an error
+            found = globmod.glob(t) or globmod.glob(str(repo / t))
+            if not found:
+                print(f"note: no file matches {t} yet", file=sys.stderr)
+            expanded += found
+        else:
+            expanded.append(t)
+    for t in expanded:
         p = Path(t) if Path(t).is_absolute() else Path.cwd() / t
         if not p.exists():
             alt = repo / t

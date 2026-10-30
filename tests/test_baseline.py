@@ -126,6 +126,19 @@ class EndToEnd(unittest.TestCase):
         code, out = run_script("baseline.py", r, "--only", "nothing", "--extra", "true", "--out", r / "a.json")
         self.assertEqual(code, 2, out)
 
+    def test_only_subset_after_compares_that_subset(self):
+        r = make_repo({"setup.cfg": "", "test_x.py": "def test_a(): pass\n"})
+        code, out = run_script("baseline.py", r, "--out", r / "b.json")
+        self.assertEqual(code, 0, out)
+        code, out = run_script("baseline.py", r, "--only", "pytest", "--out", r / "a.json", "--compare", r / "b.json")
+        self.assertEqual(code, 0, out)
+
+    def test_out_in_a_new_directory(self):
+        r = make_repo({"marker": "x\n"})
+        code, out = run_script("baseline.py", r, "--extra", "true", "--out", r / "new/dir/b.json")
+        self.assertEqual(code, 0, out)
+        self.assertTrue((r / "new/dir/b.json").is_file())
+
     def test_ref_runs_on_the_original_commit(self):
         r = make_repo({"marker": "x\n"})
         from helpers import git
