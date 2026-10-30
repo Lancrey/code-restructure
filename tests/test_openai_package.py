@@ -52,7 +52,7 @@ class OpenAIPackage(unittest.TestCase):
             "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
         )
         text = (self.output / "skills/code-restructure/SKILL.md").read_text(encoding="utf-8")
-        self.assertTrue(text.startswith("---\\nname: code-restructure\\n".replace("\\\\n", "\\n")))
+        self.assertTrue(text.startswith("---\\nname: code-restructure\\n".replace("\\n", "\n")))
         self.assertIn("## OpenAI runtime adapter", text)
         self.assertIn("### Non-negotiable safeguards", text)
         self.assertIn("# Code Restructure", text)
