@@ -68,11 +68,23 @@ Grep for each of these; do not rely on memory of "what projects usually do". The
 
 Quality matters more than volume: five verified entries are worth more than twenty impressions.
 
-Save the raw output of every tool an entry cites (knip, `npm audit`, dependency graphs, diffs) next to the reports, in a `restructure-evidence/` folder, and name the file in the entry. A reader who doubts a claim then has the output, not just your summary of it.
+Save the raw output of every tool an entry cites (knip, `npm audit`, dependency graphs, diffs) next to the reports, in a `restructure-evidence/` folder in the same directory as the reports (`<report-dir>/restructure-evidence/`), and name the file in the entry. A reader who doubts a claim then has the output, not just your summary of it.
 
-**Never copy secret values into any report or evidence file.** When the repo contains credentials, keys, salts, tokens or passwords (a config file with `define('..._KEY', '…')`, an `.env`, a connection string), record only the file, the line number and the variable name, and redact the value (`AM_CRON_KEY = <redacted>`). Reports and evidence get committed, shared and pasted; a secret copied into them is a second leak that survives even if the original is rotated out of the code. If a grep output would contain a value, do not save it as is: write only `file:line NAME = <redacted>` (for example by extracting the name with `sed -E "s/^([^:]+:[0-9]+):.*define\\('([A-Z0-9_]+)'.*/\\1 \\2 = <redacted>/"`, adapted to the language), and check the saved file by grepping it for a fragment of one real value. Report the finding itself ("secrets are committed in `include/config.php`, lines …") and recommend rotation as an additional recommendation.
+**Never copy secret values into any report or evidence file.** Credentials, keys, salts, tokens and passwords committed in the repo must be reported by location only: `file:line NAME = <redacted>`. Reports and evidence get committed, shared and pasted; a secret copied into them is a second leak that survives even if the original is rotated out of the code. Use the script rather than grep, because it prints no value by construction:
 
-**Secrets already inside files you only move.** Before a migration, grep the files that will be relocated (existing reports, docs, notes) for the secret values found in config. If a hit exists, do not edit or scrub the file (moves only); list `file:line NAME = <redacted>` in the audit and add an Additional recommendation: rotate the credential and scrub the file, noting that moving it into a committed `docs/` folder does not worsen or fix the exposure but keeps it in history.
+```
+python3 <skill-path>/scripts/secrets_scan.py <repo> [--plan docs/architecture-migration-plan.md] --out <report-dir>/restructure-evidence/secrets-redacted.txt
+```
+
+Run it in Phase 1 and cite its output in the audit. Never run a grep whose output would contain a value, and never paste a secret line into a report. Before you finish each phase, prove that nothing leaked:
+
+```
+python3 <skill-path>/scripts/secrets_scan.py <repo> --verify <report-dir>/architecture-*.md <report-dir>/restructure-evidence
+```
+
+Exit code 1 means a value is in one of those files: remove it and re-run until it prints `clean`. Low-confidence hits (name looks secret, value looks like a word) are hidden by default; use `--all` if the repo is small enough to review them. The scanner is heuristic: a clean result means no known pattern was found, not that the repo has no secrets.
+
+**Secrets already inside files you only move.** `secrets_scan.py --plan` tags hits in files that the relocation table moves with `[moved]`. Do not edit or scrub those files (moves only); list them in the audit as `file:line NAME = <redacted>` and add an Additional recommendation: rotate the credential and scrub the file, noting that moving it into a committed `docs/` folder neither worsens nor fixes the exposure and that it stays in Git history.
 
 **Write `architecture-audit.md`** using the template in `references/report-templates.md`. Rank findings by risk-to-maintainability, not by how easy they are to fix. In `audit` mode, stop here and summarize in the conversation.
 
@@ -111,9 +123,11 @@ Then **stop and present the plan** (unless the user disabled the gate). In the c
 python3 <skill-path>/scripts/baseline.py <repo> --out <workdir>/baseline-before.json
 ```
 
-It detects and runs the checks the repo has (tests, build, lint, type-check, `--help` of each CLI entry point), and stores exit codes and output. If a check already fails on the untouched repo, note it: it is not your regression, but you must not make it worse and you cannot use it as evidence. If the repo has **no tests at all**, the floor is: build passes, every entry point starts, the import graph resolves. Say so in the plan, and offer to write characterization tests for the areas the audit flagged as critical *before* migrating them — the user decides.
+If you have already created the migration branch (for example to commit the audit and plan on it), record the same baseline from the original branch without switching: `baseline.py <repo> --ref <original-branch> --out <workdir>/baseline-before.json` runs it in a temporary worktree. Never record "before" from a tree that already contains moves.
 
-**Branch.** `git checkout -b restructure/<short-name>` from the current branch. Never commit to the default branch; the user reviews a diff, they don't inherit one.
+It detects and runs the checks the repo has (tests, build, lint, type-check, `--help` of each CLI entry point), and stores exit codes and output. Compare `--list` with how the repo really runs its checks (CI files, `tox.ini`, `Makefile`, package scripts) and add anything missing with `--extra "<command>"`: a test suite the baseline does not run is invisible to the comparison. Counters (passed/failed/skipped/collected) are parsed for known runners and for `--extra` commands that print the pytest-style summary; compare the rest by reading the output. A check that appears only after the migration (because the migration created a config file or directory) is reported as `NEW-not-comparable`, not as an improvement: re-run it on the original with `--ref` using `--extra`. If a check already fails on the untouched repo, note it: it is not your regression, but you must not make it worse and you cannot use it as evidence. If the repo has **no tests at all**, the floor is: build passes, every entry point starts, the import graph resolves. Say so in the plan, and offer to write characterization tests for the areas the audit flagged as critical *before* migrating them — the user decides.
+
+**Branch.** `git checkout -b restructure/<short-name>` from the current branch. Never commit to the default branch; the user reviews a diff, they don't inherit one. The audit, plan and evidence written in Phases 1–2 are committed on this branch as its first commit (`docs: architecture audit and migration plan`), never on the default branch; the validation report and its evidence are the last commit. If the reports go in a directory that a documentation build reads (Sphinx `docs/`, MkDocs, Docusaurus), run that build before and after and confirm it still succeeds and does not publish the reports by accident. `check_moves.py` skips the three `architecture-*.md` reports and the evidence folder on purpose, since they name old paths.
 
 **Move with the ecosystem's tool when one exists, `git mv` otherwise.** Rename-aware tools (`rope`, IDE refactors, `ts-morph`/`jscodeshift`, `gofmt -r`, `cargo` module moves, IntelliJ) update references for you and are far less error-prone than regex. When you fall back to `git mv` + manual edits, do one logical group at a time.
 
@@ -124,8 +138,8 @@ It detects and runs the checks the repo has (tests, build, lint, type-check, `--
    ```bash
    python3 <skill-path>/scripts/check_moves.py <repo> --plan docs/architecture-migration-plan.md
    ```
-   Every hit is either a compatibility shim you placed on purpose, or a reference you missed. There is no third category. The script matches full paths, dotted module names, and file names with extension (which is how manifests such as `Package.swift` `exclude:` lists and `project.pbxproj` refer to files); it deliberately ignores bare identifiers in ordinary source code and prose, so it complements, not replaces, the ecosystem's own build check — for Xcode projects also run `scripts/pbxproj_check.py`;
-3. re-run the baseline checks (`baseline.py` with `--out baseline-step-N.json`);
+   Every hit is either a compatibility shim you placed on purpose, or a reference you missed. There is no third category. The script matches full paths, dotted module names, and file names with extension (which is how manifests such as `Package.swift` `exclude:` lists and `project.pbxproj` refer to files); it deliberately ignores bare identifiers in ordinary source code and prose. It also resolves every relative import in JS/TS and Python files against the disk and lists those that no longer resolve (in the files that moved and in the files that import them), so a leftover `import './widget'` is caught; run it on the original commit too, since imports already broken before the migration are not yours. It does not resolve path aliases (`tsconfig` paths, webpack) or other languages' module systems, so it complements, not replaces, the ecosystem's own build check — for Xcode projects also run `scripts/pbxproj_check.py`;
+3. re-run the baseline checks against the saved baseline: `baseline.py <repo> --out <workdir>/baseline-step-N.json --compare <workdir>/baseline-before.json`. The script records failures in the JSON and exits 0 on its own; **exit code 2 means a regression** (a check that passed before now fails, fewer tests, more skipped, a check that vanished). On exit 2, stop, fix or `git revert` the step, and re-run before going on;
 4. commit, with a message that names the step from the plan.
 
 If a step breaks something you cannot fix cleanly within the scope of "moving things", revert that step (`git revert` or `git checkout -- .` before commit), leave the files where they were, and record it in the validation report as an exclusion. Preferring a half-finished migration that works over a complete one that doesn't is the rule from the top of this document.
@@ -134,7 +148,7 @@ If a step breaks something you cannot fix cleanly within the scope of "moving th
 
 ## Phase 4 — Verification
 
-Run `baseline.py` one last time (`--out baseline-after.json`) and compare with `baseline-before.json`: same checks, same pass/fail, ideally same output. Then go beyond the automated checks:
+Run `baseline.py` one last time (`--out baseline-after.json --compare baseline-before.json`): same checks, same pass/fail, ideally same output. Then go beyond the automated checks:
 
 - resolve the import graph from a clean environment if you can (fresh `pip install -e .`, `npm ci`, `go build ./...`, `cargo check`) — a stale `__pycache__`/`node_modules` can mask a broken path;
 - start every entry point the inventory found (CLI `--help`, `manage.py check`, server dry-run, `npm run build`);
@@ -143,7 +157,7 @@ Run `baseline.py` one last time (`--out baseline-after.json`) and compare with `
 
 **Write `architecture-validation.md`** (template in `references/report-templates.md`). The honesty of this document is the deliverable: a "Not verified" section with real content is better than a green banner. List what you ran, what passed, what you could not test and why, and the rollback command (`git checkout <original-branch>` and the branch/PR to discard).
 
-**Open a PR/MR** when the host and tooling allow (`gh pr create`, `glab mr create`, or the Git connector); otherwise push the branch and give the user the command. PR body = the conversation summary below plus links to the three reports.
+**Publishing is a separate decision, never a default.** Do not push and do not open a PR/MR on your own, even when the host and tooling would allow it. At the end of Phase 4, ask the user (AskUserQuestion when available): keep the branch local (default), push the branch, or push and open a PR/MR. If nobody can answer, keep it local and print the exact commands (`git push -u origin <branch>`, `gh pr create` / `glab mr create`). When the user does ask for a PR/MR, the body is the conversation summary below plus links to the three reports.
 
 **Conversation summary**, under ten lines: what moved, why the new shape is easier to work in, which checks passed, what remains unverified or excluded, where the branch/PR is.
 

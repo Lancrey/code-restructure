@@ -23,27 +23,44 @@ WATCH_EXT = {".swift", ".m", ".mm", ".c", ".cpp", ".h", ".plist", ".strings", ".
 def parse_objects(text):
     """Return dict id -> dict(isa, path, name, sourceTree, children[]).
 
-    Tolerates both Xcode's own formatting (bare keys, /* comments */) and the
-    quoted-key style written by generators (every key and value in quotes).
+    Tolerates Xcode's own formatting (bare keys, /* comments */, file references on a
+    single line, groups spread over several lines) and the quoted-key style written
+    by generators (every key and value in quotes).
     """
     objs = {}
-    q = r'"?'
-    pat = re.compile(
-        r'^\t\t"?([0-9A-F]{24})"?(?: /\*.*?\*/)? = \{(.*?)^\t\t\};', re.S | re.M)
-    for m in pat.finditer(text):
-        oid, body = m.group(1), m.group(2)
-        isa = re.search(r'"?isa"? = "?(\w+)"?;', body)
-        if not isa:
-            continue
-        d = {"isa": isa.group(1)}
-        for key in ("path", "name", "sourceTree"):
-            km = re.search(r'"?%s"? = ("(?:[^"\\]|\\.)*"|[^;]+);' % key, body)
-            if km:
-                d[key] = km.group(1).strip().strip('"')
-        ch = re.search(r'"?children"? = \((.*?)\);', body, re.S)
-        d["children"] = re.findall(r"([0-9A-F]{24})", ch.group(1)) if ch else []
-        objs[oid] = d
+    start = re.compile(r'^\t\t"?([0-9A-F]{24})"?(?: /\*.*?\*/)? = \{(.*)$')
+    body = None
+    oid = None
+    for line in text.splitlines():
+        if body is None:
+            m = start.match(line)
+            if not m:
+                continue
+            oid, rest = m.group(1), m.group(2)
+            if rest.rstrip().endswith("};"):  # whole object on one line
+                add_object(objs, oid, rest.rstrip()[:-2])
+            else:
+                body = [rest]
+        elif re.match(r"^\t\t\};\s*$", line):
+            add_object(objs, oid, "\n".join(body))
+            body = None
+        else:
+            body.append(line)
     return objs
+
+
+def add_object(objs, oid, body):
+    isa = re.search(r'"?isa"? = "?(\w+)"?;', body)
+    if not isa:
+        return
+    d = {"isa": isa.group(1)}
+    for key in ("path", "name", "sourceTree"):
+        km = re.search(r'"?%s"? = ("(?:[^"\\]|\\.)*"|[^;]+);' % key, body)
+        if km:
+            d[key] = km.group(1).strip().strip('"')
+    ch = re.search(r'"?children"? = \((.*?)\);', body, re.S)
+    d["children"] = re.findall(r"([0-9A-F]{24})", ch.group(1)) if ch else []
+    objs[oid] = d
 
 
 def resolve(objs, root_id, base):

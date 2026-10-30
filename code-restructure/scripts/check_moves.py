@@ -17,12 +17,22 @@ Usage:
   python3 check_moves.py <repo> --plan plan.md --allow src/utils.py --allow "docs/*"
   python3 check_moves.py <repo> --plan plan.md --json hits.json
 
+Besides text references it also resolves every RELATIVE import in JS/TS (`./x`,
+`../y`) and Python (`from .x import`, `from ..y import`) files against the disk and
+lists those that no longer resolve — in files that moved (their relative imports now
+point somewhere else) and in files that import something that moved. This runs without
+a plan too (use --no-imports to skip). Not covered: tsconfig/webpack path aliases,
+bare package specifiers, PHP/Rust/Go/Java module resolution (text matching only).
+Run it on the original commit as well: imports already unresolved before the migration
+are not your regression.
+
 Exit code 0: no hits. 1: hits found. 2: usage / parse error.
 """
 import argparse
 import fnmatch
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -44,6 +54,61 @@ GENERIC_NAMES = {
     "config", "settings", "types", "models", "views", "tests", "test", "src", "api", "base",
     "mod", "init", "__init__", "README", "readme", "setup", "cli", "server", "client",
 }
+
+
+JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte", ".json")
+JS_SRC = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"}
+REL_JS = re.compile(r"""(?:\bfrom|\bimport|\brequire)\s*\(?\s*['"](\.{1,2}(?:/[^'"\n]*)?)['"]""")
+REL_PY = re.compile(r"^\s*from\s+(\.+)([\w.]*)\s+import\b")
+JS_SWAP = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
+
+
+def js_resolves(repo, base):
+    """True if the relative JS/TS specifier resolved to `base` (repo-relative, posix) names a file or a folder with an index."""
+    base = base.split("?")[0].split("#")[0]
+    if base in ("", "."):
+        return True
+    cands = [base] + [base + e for e in JS_EXTS] + [posixpath.join(base, "index" + e) for e in JS_EXTS]
+    stem, ext = posixpath.splitext(base)
+    for alt in JS_SWAP.get(ext, ()):
+        cands.append(stem + alt)
+    return any((repo / c).is_file() for c in cands)
+
+
+def py_resolves(repo, importer, dots, mod):
+    pkg = posixpath.dirname(importer)
+    for _ in range(len(dots) - 1):
+        pkg = posixpath.dirname(pkg)
+    if not mod:
+        return True  # `from . import name`: name may be a module or a symbol
+    base = posixpath.join(pkg, mod.replace(".", "/"))
+    return (repo / (base + ".py")).is_file() or (repo / base).is_dir()
+
+
+def unresolved_relative_imports(repo, files, moved_hint):
+    """Yield (file, line, spec, hint) for relative imports that do not resolve on disk."""
+    out = []
+    for rel in files:
+        ext = os.path.splitext(rel)[1].lower()
+        if ext not in JS_SRC and ext != ".py":
+            continue
+        try:
+            text = (repo / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for ln, line in enumerate(text.splitlines(), 1):
+            if ext == ".py":
+                m = REL_PY.match(line)
+                if m and not py_resolves(repo, rel, m.group(1), m.group(2)):
+                    out.append((rel, ln, m.group(1) + m.group(2), ""))
+                continue
+            for m in REL_JS.finditer(line):
+                spec = m.group(1)
+                base = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
+                if not js_resolves(repo, base):
+                    hint = moved_hint.get(base) or moved_hint.get(posixpath.splitext(base)[0]) or ""
+                    out.append((rel, ln, spec, hint))
+    return out
 
 
 def parse_plan_table(text):
@@ -139,6 +204,7 @@ def main():
     ap.add_argument("--allow", action="append", default=[], help="file path or glob whose hits are expected (shims); repeatable")
     ap.add_argument("--ignore-docs", action="store_true", help="skip Markdown/RST files (default: included, since READMEs link to paths)")
     ap.add_argument("--json", help="write hits to this JSON file")
+    ap.add_argument("--no-imports", action="store_true", help="skip the relative-import resolution check")
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
@@ -183,15 +249,12 @@ def main():
             if to.startswith(t.rstrip("/")) and not t.endswith("/"):
                 continue
             token_map.setdefault(t, (frm, to, new_forms))
-    if not token_map:
-        print("nothing to check")
-        return
     # longest tokens first so "src/utils.py" is reported rather than "utils"
     tokens = sorted(token_map, key=len, reverse=True)
-    pattern = re.compile("|".join(re.escape(t) for t in tokens))
+    pattern = re.compile("|".join(re.escape(t) for t in tokens)) if tokens else None
 
     hits = []
-    for rel in iter_files(repo):
+    for rel in (iter_files(repo) if pattern else []):
         if os.path.splitext(rel)[1].lower() in BINARY_EXT:
             continue
         if args.ignore_docs and os.path.splitext(rel)[1].lower() in (".md", ".rst", ".txt"):
@@ -204,10 +267,7 @@ def main():
             continue
         if not pattern.search(text):
             continue
-        for ln, line in enumerate(text.splitlines(), 1):
-            m = pattern.search(line)
-            if not m:
-                continue
+        for ln, line, m in ((ln, line, m) for ln, line in enumerate(text.splitlines(), 1) for m in pattern.finditer(line)):
             tok = m.group(0)
             frm, to, new_forms = token_map[tok]
             if tok == bare_name(frm):
@@ -226,11 +286,45 @@ def main():
                     continue
             hits.append({"file": rel, "line": ln, "token": tok, "from": frm, "to": to, "text": line.strip()[:200]})
 
+    broken = []
+    if not args.no_imports:
+        moved_hint = {}
+        for frm, to, _ in moves:
+            f = frm.strip().rstrip("/")
+            moved_hint[f] = to
+            moved_hint[os.path.splitext(f)[0]] = to
+        files = [r for r in iter_files(repo) if not any(fnmatch.fnmatch(r, a) or r == a for a in allow)]
+        broken = unresolved_relative_imports(repo, files, moved_hint)
+
     if args.json:
-        Path(args.json).write_text(json.dumps(hits, indent=2), encoding="utf-8")
+        Path(args.json).write_text(json.dumps({"stale": hits, "unresolved_relative_imports": [
+            {"file": f, "line": l, "spec": s_, "moved_to": h} for f, l, s_, h in broken]}, indent=2), encoding="utf-8")
+
+    def report_broken():
+        if not broken:
+            return
+        print(f"\n{len(broken)} relative import(s) that do not resolve on disk:")
+        # imports that point at a moved file first: they are the ones the migration broke
+        ordered = sorted(broken, key=lambda x: (not x[3], x[0], x[1]))
+        for f, l, s_, h in ordered[:30]:
+            print(f"  {f}:{l}  {s_}" + (f"   <- was moved to {h}" if h else ""))
+        if len(broken) > 30:
+            by_dir = {}
+            for f, *_ in ordered[30:]:
+                by_dir[posixpath.dirname(f)] = by_dir.get(posixpath.dirname(f), 0) + 1
+            print(f"  … {len(broken) - 30} more, by folder:")
+            for d, n in sorted(by_dir.items(), key=lambda kv: -kv[1])[:10]:
+                print(f"      {d or '.'}: {n}")
+        print("Compare with the original commit: imports unresolved there too are pre-existing.")
 
     if not hits:
-        print(f"No stale references found for {len(moves)} relocation rows ({len(tokens)} search tokens).")
+        if tokens:
+            print(f"No stale references found for {len(moves)} relocation rows ({len(tokens)} search tokens).")
+        else:
+            print("nothing to check in the relocation table")
+        report_broken()
+        if broken:
+            sys.exit(1)
         return
     by_file = {}
     for h in hits:
@@ -243,6 +337,7 @@ def main():
         if len(hs) > 20:
             print(f"    … {len(hs) - 20} more")
     print("\nEach hit is either an intentional compatibility shim (add it with --allow) or a missed reference.")
+    report_broken()
     sys.exit(1)
 
 

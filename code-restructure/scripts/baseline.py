@@ -11,6 +11,7 @@ Usage:
   python3 baseline.py <repo> --out after.json --compare before.json
   python3 baseline.py <repo> --only pytest,build --out x.json      # subset by id
   python3 baseline.py <repo> --extra "make check" --extra "./scripts/smoke.sh"
+  python3 baseline.py <repo> --ref main --out baseline-before.json  # run on a ref in a temporary worktree
 
 Rules it follows:
   - never modifies the repository; everything runs from the repo root
@@ -39,6 +40,20 @@ def read_json(path: Path):
         return {}
 
 
+def find_test_files(repo: Path, max_depth=3):
+    """True if a test_*.py or *_test.py file exists within max_depth, ignoring virtualenvs and vendor dirs."""
+    skip = {".git", "node_modules", "vendor", ".venv", "venv", "env", "__pycache__", "build", "dist", ".tox"}
+    base = len(repo.parts)
+    for root, dirs, names in os.walk(repo):
+        dirs[:] = [d for d in dirs if d not in skip]
+        if len(Path(root).parts) - base >= max_depth:
+            dirs[:] = []
+        for n in names:
+            if n.endswith(".py") and (n.startswith("test_") or n.endswith("_test.py")):
+                return True
+    return False
+
+
 def which(cmd):
     return shutil.which(cmd) is not None
 
@@ -53,7 +68,9 @@ def detect_checks(repo: Path):
     if has(repo, "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "pytest.ini", "tox.ini"):
         py = "python3" if which("python3") else "python"
         pyproject_txt = (repo / "pyproject.toml").read_text(errors="replace") if has(repo, "pyproject.toml") else ""
-        if has(repo, "pytest.ini", "conftest.py", "tests", "test") or "pytest" in pyproject_txt:
+        cfg_txt = "".join((repo / n).read_text(errors="replace") for n in ("tox.ini", "setup.cfg", "requirements-dev.txt", "requirements.txt") if (repo / n).exists())
+        if has(repo, "pytest.ini", "conftest.py", "tests", "test") or "pytest" in pyproject_txt or "pytest" in cfg_txt \
+                or find_test_files(repo):
             add("pytest-collect", f"{py} -m pytest --collect-only -q", "test-discovery",
                 "number of collected tests must not drop after the move")
             add("pytest", f"{py} -m pytest -q -x --no-header -p no:cacheprovider", "test")
@@ -168,7 +185,8 @@ def detect_checks(repo: Path):
 COUNTERS = [
     ("pytest", r"(\d+) passed", "passed"),
     ("pytest", r"(\d+) failed", "failed"),
-    ("pytest", r"(\d+) error", "errors"),
+    ("pytest", r"(\d+) errors?\b", "errors"),
+    ("pytest", r"(\d+) skipped", "skipped"),
     ("pytest-collect", r"(\d+) tests? collected", "collected"),
     ("pytest-collect", r"^(\d+) tests? collected", "collected"),
     ("npm:test", r"Tests:\s+.*?(\d+) passed", "passed"),
@@ -189,7 +207,8 @@ COUNTERS = [
 def parse_counters(cid, output):
     counters = {}
     for prefix, pattern, name in COUNTERS:
-        if not cid.startswith(prefix):
+        # custom --extra commands: apply the pytest patterns, they match any runner printing "N passed"
+        if not (cid.startswith(prefix) or (cid.startswith("extra") and prefix == "pytest")):
             continue
         if pattern is None:
             counters[name] = len([l for l in output.splitlines() if l.strip()])
@@ -243,7 +262,11 @@ def compare(before, after):
         kb = cb.get("counters", {}) if cb else {}
         ka = ca.get("counters", {}) if ca else {}
         verdict = "same"
-        if sb == "pass" and sa != "pass":
+        if cb is None:
+            verdict = "NEW-not-comparable"
+        elif ca is None:
+            verdict = "REGRESSION"  # a check that existed before is no longer run
+        elif sb == "pass" and sa != "pass":
             verdict = "REGRESSION"
         elif sb != "pass" and sa == "pass":
             verdict = "fixed"
@@ -253,6 +276,8 @@ def compare(before, after):
             if k in ("collected", "passed", "lines", "ok_packages", "files_passed") and kb.get(k, 0) > ka.get(k, 0):
                 verdict = "REGRESSION"
             if k in ("failed", "errors", "failed_packages") and ka.get(k, 0) > kb.get(k, 0):
+                verdict = "REGRESSION"
+            if k == "skipped" and k in kb and k in ka and ka[k] > kb[k]:
                 verdict = "REGRESSION"
         if verdict == "REGRESSION":
             regressions.append(cid)
@@ -270,11 +295,30 @@ def main():
     ap.add_argument("--extra", action="append", default=[], help="extra shell command to run as a check (repeatable)")
     ap.add_argument("--timeout", type=int, default=900, help="seconds per check")
     ap.add_argument("--compare", help="earlier baseline JSON to diff against")
+    ap.add_argument("--ref", help="run the checks on this git ref (branch, tag, sha) in a temporary worktree instead of the working tree; "
+                                  "use it to record the 'before' baseline after you have already created the migration branch")
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
     if not repo.is_dir():
         sys.exit(f"not a directory: {repo}")
+    worktree = None
+    if args.ref:
+        import tempfile
+        worktree = Path(tempfile.mkdtemp(prefix="baseline-ref-")) / "wt"
+        r = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), args.ref], capture_output=True, text=True)
+        if r.returncode != 0:
+            sys.exit(f"git worktree add failed: {r.stderr.strip()}")
+        repo = worktree
+    try:
+        run(args, repo)
+    finally:
+        if worktree is not None:
+            subprocess.run(["git", "-C", str(worktree), "worktree", "remove", "--force", str(worktree)], capture_output=True)
+            shutil.rmtree(worktree.parent, ignore_errors=True)
+
+
+def run(args, repo):
     checks = detect_checks(repo)
     for i, cmd in enumerate(args.extra, 1):
         checks.append({"id": f"extra-{i}", "cmd": cmd, "kind": "custom", "note": ""})
