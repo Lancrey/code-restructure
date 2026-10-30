@@ -103,9 +103,11 @@ def detect_checks(repo: Path):
                  "yarn" if has(repo, "yarn.lock") and which("yarn") else \
                  "bun" if has(repo, "bun.lockb", "bun.lock") and which("bun") else "npm"
         run = f"{runner} run" if runner != "yarn" else "yarn"
-        for name in ("typecheck", "type-check", "tsc", "lint", "build", "test", "test:unit", "check"):
+        for name in ("typecheck", "type-check", "tsc", "lint", "build", "test", "test:unit", "check",
+                     "css", "build:css", "styles", "sass", "scss", "less", "lint:css", "stylelint"):
             if name in scripts:
-                kind = "typecheck" if "type" in name or name == "tsc" else "lint" if name == "lint" else "build" if name == "build" else "test" if name.startswith("test") else "lint"
+                kind = "typecheck" if "type" in name or name == "tsc" else "lint" if name in ("lint", "lint:css", "stylelint") else \
+                    "build" if name in ("build", "css", "build:css", "styles", "sass", "scss", "less") else "test" if name.startswith("test") else "lint"
                 extra = " -- --run" if name.startswith("test") and "vitest" in scripts[name] and "--run" not in scripts[name] and "--watch=false" not in scripts[name] else ""
                 env = "CI=1 " if name.startswith("test") else ""
                 add(f"npm:{name}", f"{env}{run} {name}{extra}", kind)
@@ -171,6 +173,14 @@ def detect_checks(repo: Path):
     elif has(repo, "pom.xml") and which("mvn"):
         add("maven-verify", "mvn -q -B verify", "build")
 
+    # ---------- Stylesheets without npm scripts ----------
+    if not has(repo, "package.json"):
+        if which("sass") and any(repo.glob("**/*.scss")):
+            add("sass-compile", "find . -name '*.scss' -not -name '_*' -not -path './node_modules/*' -print0 | xargs -0 -n1 sass --no-source-map --quiet > /dev/null", "build",
+                "every non-partial .scss compiles; output discarded — compare built CSS by hand if outputs are committed")
+        if which("lessc") and any(repo.glob("**/*.less")):
+            add("less-compile", "find . -name '*.less' -not -path './node_modules/*' -print0 | xargs -0 -n1 lessc > /dev/null", "build", "every .less compiles")
+
     # ---------- Generic ----------
     if has(repo, "Makefile"):
         mk = (repo / "Makefile").read_text(errors="replace")
@@ -200,6 +210,8 @@ COUNTERS = [
     ("ruff", r"Found (\d+) errors?", "findings"),
     ("flake8", None, "lines"),
     ("npm:lint", r"(\d+) problems?", "findings"),
+    ("npm:stylelint", r"(\d+) problems?", "findings"),
+    ("npm:lint:css", r"(\d+) problems?", "findings"),
     ("mypy", r"Found (\d+) errors?", "findings"),
     ("phpstan", r"Found (\d+) errors?", "findings"),
     ("cargo-clippy", r"warning: .* generated (\d+) warnings?", "findings"),

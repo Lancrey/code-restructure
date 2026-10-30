@@ -18,7 +18,9 @@ Usage:
   python3 check_moves.py <repo> --plan plan.md --json hits.json
 
 Besides text references it also resolves every RELATIVE import in JS/TS (`./x`,
-`../y`) and Python (`from .x import`, `from ..y import`) files against the disk and
+`../y`) and Python (`from .x import`, `from ..y import`) files, every relative `url()`,
+`@import`, `@use`, `@forward` in CSS/Sass/Less (partials `_x.scss`, `x/_index.scss`), and
+every relative `src`/`href`/`srcset`/`poster` in HTML and template files, against the disk and
 lists those that no longer resolve — in files that moved (their relative imports now
 point somewhere else) and in files that import something that moved. This runs without
 a plan too (use --no-imports to skip). Not covered: tsconfig/webpack path aliases,
@@ -69,6 +71,53 @@ JS_SRC = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", 
 REL_JS = re.compile(r"""(?:\bfrom|\bimport|\brequire)\s*\(?\s*['"](\.{1,2}(?:/[^'"\n]*)?)['"]""")
 REL_PY = re.compile(r"^\s*from\s+(\.+)([\w.]*)\s+import\s+(.*)$")
 JS_SWAP = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
+
+STYLE_EXT = {".css", ".scss", ".sass", ".less"}
+HTML_EXT = {".html", ".htm", ".xhtml", ".tpl", ".twig", ".jinja", ".jinja2", ".j2", ".ejs", ".erb", ".hbs",
+            ".mustache", ".njk", ".liquid", ".svelte", ".astro"}
+# url(x) / url('x') / url("x") ; @import 'x' / url(x) ; @use 'x' ; @forward 'x'  — one capture group each
+CSS_URL = re.compile(r"""url\(\s*(?!['"]?(?:data:|https?:|//|#|%23|\$|@|\{|<))['"]?([^'")\s]+)['"]?\s*\)""")
+CSS_IMPORT = re.compile(r"""@(?:import|use|forward)\s+(?:\(reference\)\s*|\(css\)\s*|\(less\)\s*)?(?!url\()['"](?!(?:https?:|//|data:|sass:|~|@|\$))([^'"]+)['"]""")
+# src= href= srcset= poster= data-src= ; also <use href> ; ignores absolute, root-relative, anchors, schemes, template expressions
+HTML_ATTR = re.compile(r"""\b(?:src|href|srcset|poster|data-src|xlink:href)\s*=\s*(["'])(?!(?:https?:|//|/|#|mailto:|tel:|data:|javascript:|\{|\$|<\?|%|\s*$))([^"']+)\1""", re.I)
+
+
+def style_resolves(repo, importer, spec, kind):
+    """Relative CSS/Sass/Less reference -> does it name a file on disk? Load paths are not known here."""
+    spec = spec.split("?")[0].split("#")[0]
+    if not spec or spec.startswith("/"):
+        return True  # root-relative: a deployment path, not checkable from the tree
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec))
+    if (repo / base).is_file():
+        return True
+    if kind != "import":
+        return False
+    ext_i = os.path.splitext(importer)[1].lower()
+    exts = (".scss", ".sass", ".css") if ext_i in (".scss", ".sass") else (".less", ".css") if ext_i == ".less" else (".css",)
+    d, n = posixpath.dirname(base), posixpath.basename(base)
+    for e in exts:
+        for c in (posixpath.join(d, n + e), posixpath.join(d, "_" + n + e), posixpath.join(base, "_index" + e), posixpath.join(base, "index" + e)):
+            if (repo / c).is_file():
+                return True
+    # a bare Sass/Less specifier may come from a load path or node_modules, which this script does not know
+    if not spec.startswith(".") and ext_i in (".scss", ".sass", ".less") and (repo / "node_modules").is_dir():
+        return True
+    return False
+
+
+def html_resolves(repo, page, spec):
+    spec = spec.split("?")[0].split("#")[0].strip()
+    if not spec:
+        return True
+    # srcset: "a.png 1x, b.png 2x" -> every candidate
+    parts = [p.strip().split()[0] for p in spec.split(",") if p.strip()] if " " in spec or "," in spec else [spec]
+    for p_ in parts:
+        if p_.startswith(("/", "http", "//", "{", "$", "<", "%")):
+            continue
+        base = posixpath.normpath(posixpath.join(posixpath.dirname(page), p_))
+        if not (repo / base).is_file() and not (repo / base).is_dir():
+            return False
+    return True
 
 
 def js_resolves(repo, base):
@@ -133,18 +182,53 @@ def init_binds(name, init_txt):
     return False
 
 
-def unresolved_relative_imports(repo, files, moved_hint):
-    """Yield (file, line, spec, hint) for relative imports that do not resolve on disk."""
+def hint_for(moved_hint, importer, spec):
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(importer), spec.split("?")[0].split("#")[0]))
+    stem = posixpath.splitext(base)[0]
+    d, n = posixpath.dirname(stem), posixpath.basename(stem)
+    for key in (base, stem, posixpath.join(d, "_" + n), posixpath.join(stem, "_index"), posixpath.join(stem, "index")):
+        if moved_hint.get(key):
+            return moved_hint[key]
+    for frm, to in moved_hint.items():  # a moved directory: img/bg.png -> assets/img/bg.png
+        if base.startswith(frm + "/"):
+            return posixpath.join(to, base[len(frm) + 1:])
+    return ""
+
+
+def unresolved_relative_imports(repo, files, moved_hint, dests=()):
+    """Yield (file, line, spec, hint) for relative references that do not resolve on disk.
+    hint = where the target went (a moved path), or "(this file was moved)" when the referencing
+    file is itself a destination of the plan — both mean the plan caused the break."""
     out = []
     for rel in files:
+        self_moved = any(rel == d or rel.startswith(d.rstrip("/") + "/") for d in dests)
         ext = os.path.splitext(rel)[1].lower()
-        if ext not in JS_SRC and ext != ".py":
+        if rel.endswith(".blade.php"):
+            ext = ".html"
+        if ext not in JS_SRC and ext != ".py" and ext not in STYLE_EXT and ext not in HTML_EXT:
             continue
         try:
             text = (repo / rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         for ln, line in enumerate(text.splitlines(), 1):
+            if ext in STYLE_EXT:
+                for m in CSS_URL.finditer(line):
+                    if not style_resolves(repo, rel, m.group(1), "url"):
+                        out.append((rel, ln, "url(%s)" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
+                for m in CSS_IMPORT.finditer(line):
+                    if not style_resolves(repo, rel, m.group(1), "import"):
+                        out.append((rel, ln, "@import %s" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
+                continue
+            if ext in HTML_EXT:
+                for m in HTML_ATTR.finditer(line):
+                    if not html_resolves(repo, rel, m.group(2)):
+                        out.append((rel, ln, m.group(2)[:80], hint_for(moved_hint, rel, m.group(2).split()[0])))
+                # inline style="background: url(...)" and <style> blocks in templates
+                for m in CSS_URL.finditer(line):
+                    if not style_resolves(repo, rel, m.group(1), "url"):
+                        out.append((rel, ln, "url(%s)" % m.group(1), hint_for(moved_hint, rel, m.group(1))))
+                continue
             if ext == ".py":
                 m = REL_PY.match(line)
                 if m:
@@ -162,6 +246,8 @@ def unresolved_relative_imports(repo, files, moved_hint):
                 if not js_resolves(repo, base):
                     hint = moved_hint.get(base) or moved_hint.get(posixpath.splitext(base)[0]) or ""
                     out.append((rel, ln, spec, hint))
+        if self_moved:
+            out = [(f, l, sp, h or "(this file was moved)") if f == rel else (f, l, sp, h) for f, l, sp, h in out]
     return out
 
 
@@ -214,8 +300,11 @@ def tokens_for(path):
         if prefix and "/" in prefix or len(prefix) > 3:
             toks.add(prefix + "/")
         return toks
-    toks.add(p)
     stem, ext = os.path.splitext(p)
+    if ext == "" and "/" not in p:
+        toks.add(p + "/")                   # a bare directory name (img, lib): only its path use counts, not the word
+        return toks
+    toks.add(p)
     if ext == "" and "/" in p:
         toks.add(p.replace("/", "."))       # package form of a directory (python, java, php-ish)
     if ext in SOURCE_EXT_FOR_MODULE:
@@ -259,6 +348,7 @@ def main():
     ap.add_argument("--ignore-docs", action="store_true", help="skip Markdown/RST files (default: included, since READMEs link to paths)")
     ap.add_argument("--json", help="write hits to this JSON file")
     ap.add_argument("--no-imports", action="store_true", help="skip the relative-import resolution check")
+    ap.add_argument("--all-unresolved", action="store_true", help="list every unresolved reference, including those not explained by the plan")
     ap.add_argument("--in-progress", action="store_true",
                     help="mid-migration run: rows whose From still exists and To does not are PENDING and skipped "
                          "(reported as a count); without this flag every row of the plan must be done")
@@ -396,7 +486,10 @@ def main():
             moved_hint[f] = to
             moved_hint[os.path.splitext(f)[0]] = to
         files = [r for r in iter_files(repo) if not any(fnmatch.fnmatch(r, a) or r == a for a in allow)]
-        broken = unresolved_relative_imports(repo, files, moved_hint)
+        dests = [to.strip().rstrip("/") for _, to, _ in moves if not any(ch in to for ch in "*?[]<>")]
+        broken = unresolved_relative_imports(repo, files, moved_hint, dests)
+    caused = [b for b in broken if b[3]]
+    unrelated = [b for b in broken if not b[3]]
 
     if args.json:
         Path(args.json).write_text(json.dumps({"stale": hits, "relocation_table": table_problems, "unresolved_relative_imports": [
@@ -409,21 +502,26 @@ def main():
         print()
 
     def report_broken():
-        if not broken:
-            return
-        print(f"\n{len(broken)} relative import(s) that do not resolve on disk:")
-        # imports that point at a moved file first: they are the ones the migration broke
-        ordered = sorted(broken, key=lambda x: (not x[3], x[0], x[1]))
-        for f, l, s_, h in ordered[:30]:
-            print(f"  {f}:{l}  {s_}" + (f"   <- was moved to {h}" if h else ""))
-        if len(broken) > 30:
-            by_dir = {}
-            for f, *_ in ordered[30:]:
-                by_dir[posixpath.dirname(f)] = by_dir.get(posixpath.dirname(f), 0) + 1
-            print(f"  … {len(broken) - 30} more, by folder:")
-            for d, n in sorted(by_dir.items(), key=lambda kv: -kv[1])[:10]:
-                print(f"      {d or '.'}: {n}")
-        print("Compare with the original commit: imports unresolved there too are pre-existing.")
+        if caused:
+            print(f"\n{len(caused)} relative reference(s) broken by the listed moves:")
+            for f, l, s_, h in sorted(caused)[:80]:
+                print(f"  {f}:{l}  {s_}   <- " + (h if h.startswith("(") else f"was moved to {h}"))
+            if len(caused) > 80:
+                print(f"  … {len(caused) - 80} more")
+        if unrelated:
+            shown = unrelated if args.all_unresolved else unrelated[:10]
+            print(f"\n{len(unrelated)} relative reference(s) that do not resolve on disk and are NOT explained by the listed moves"
+                  f" (pre-existing, vendored demo pages, or a move missing from the plan):")
+            for f, l, s_, h in sorted(shown):
+                print(f"  {f}:{l}  {s_}")
+            if len(unrelated) > len(shown):
+                by_dir = {}
+                for f, *_ in unrelated:
+                    by_dir[posixpath.dirname(f)] = by_dir.get(posixpath.dirname(f), 0) + 1
+                print(f"  … {len(unrelated) - len(shown)} more (--all-unresolved to list), by folder:")
+                for d, n in sorted(by_dir.items(), key=lambda kv: -kv[1])[:10]:
+                    print(f"      {d or '.'}: {n}")
+            print("  Run the same command on the original commit: anything unresolved there too is pre-existing and not yours.")
 
     if not hits:
         if tokens:
@@ -431,7 +529,7 @@ def main():
         else:
             print("nothing to check in the relocation table")
         report_broken()
-        if broken or table_problems:
+        if caused or table_problems:
             sys.exit(1)
         return
     by_file = {}
