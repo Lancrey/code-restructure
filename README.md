@@ -17,8 +17,15 @@ Python, JavaScript/TypeScript, Go, Rust, Java/Kotlin, PHP, Swift/Xcode. Other la
 ## Contents
 
 - `code-restructure/SKILL.md`: the skill
-- `code-restructure/references/`: one guide per ecosystem and the report templates
-- `code-restructure/scripts/`: `inventory.py`, `baseline.py`, `check_moves.py`, `pbxproj_check.py` (Python 3, no dependencies)
+- `code-restructure/references/`: one guide per ecosystem (Python, JS/TS, Go, Rust, Java/Kotlin, PHP, Swift/Xcode), front-end assets (CSS/Sass/Less, HTML templates, asset folders) and the report templates
+- `code-restructure/scripts/` (Python 3, no dependencies):
+  - `gate.py`: runs every verification gate in one command (`--record-before`, `--step N`, `--final`); the entry point the skill uses during a migration
+  - `inventory.py`: tree, languages, path-pinning files, entry points
+  - `baseline.py`: detects and runs the repo's checks, compares before/after
+  - `check_moves.py`: stale references, relocation table vs disk, unresolved relative imports and asset paths
+  - `secrets_scan.py`: lists hard-coded secrets without their values; verifies reports and evidence leak none
+  - `pbxproj_check.py`: Xcode project file vs disk
+- `tests/`: unit and end-to-end tests (Python, TypeScript with `tsc`, Sass with `sass`), run by GitHub Actions
 
 ## Installation
 

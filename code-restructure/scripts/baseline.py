@@ -85,7 +85,8 @@ def detect_checks(repo: Path):
             # order, which changes when test files move, and hides new failures behind an old one
             add("pytest", f"{py} -m pytest -q --no-header -p no:cacheprovider", "test")
         add("py-compile", f"{py} -m compileall -q .", "build")
-        if which("ruff") or has(repo, "ruff.toml", ".ruff.toml"):
+        # only when the PROJECT uses ruff: a ruff binary on this machine is not a project check
+        if which("ruff") and (has(repo, "ruff.toml", ".ruff.toml") or "[tool.ruff" in pyproject_txt):
             add("ruff", "ruff check .", "lint")
         elif which("flake8") and has(repo, ".flake8", "setup.cfg", "tox.ini"):
             add("flake8", "flake8", "lint")

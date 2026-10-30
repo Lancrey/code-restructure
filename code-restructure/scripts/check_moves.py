@@ -406,6 +406,8 @@ def iter_files(repo: Path):
 
 
 def main():
+    UNCERTAIN.clear()  # module-level collectors: reset so a second call in the same process starts clean
+    UNCERTAIN_TPL.clear()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("repo")
     ap.add_argument("--plan", help="migration plan markdown with the From|To table")
