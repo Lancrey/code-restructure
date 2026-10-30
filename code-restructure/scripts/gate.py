@@ -18,6 +18,8 @@ edits or commits anything.
 """
 import argparse
 import glob
+import json
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -26,7 +28,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def run(label, cmd, ok_codes=(0,), unverified_codes=()):
-    print(f"\n=== {label}\n$ {' '.join(str(c) for c in cmd)}", flush=True)
+    print(f"\n=== {label}\n$ {shlex.join(str(c) for c in cmd)}", flush=True)
     r = subprocess.run([sys.executable, *cmd], capture_output=True, text=True)
     out = (r.stdout + r.stderr).strip()
     if out:
@@ -71,6 +73,18 @@ def main():
             sys.exit(2)
         verdicts["baseline before"] = run("baseline before", [HERE / "baseline.py", repo, "--out", ev / "baseline-before.json"]
                                           + (["--ref", args.ref] if args.ref else []) + base_args)
+        try:
+            checks = json.loads((ev / "baseline-before.json").read_text())["checks"]
+            green = [c["id"] for c in checks if c["status"] == "pass"]
+            counted = [c["id"] for c in checks if c["status"] == "fail" and c.get("counters")]
+            if not green and not counted:
+                print("\nWARNING: no check passes on the untouched tree and none reports counts: the comparison can only say "
+                      "'still failing'. Build a verification floor that passes (or prints 'N passed, M failed') and pass it with --extra.")
+                verdicts["baseline before"] = "UNVERIFIED"
+            elif not green:
+                print(f"\nnote: no check passes before the migration; regressions will be judged on the counters of {', '.join(counted)} only.")
+        except (OSError, ValueError, KeyError):
+            pass
         verdicts["references before"] = run("references before (what is already unresolved)",
                                             [HERE / "check_moves.py", repo, "--plan", plan, "--in-progress", "--json", ev / "references-before.json"] + allow_args,
                                             ok_codes=(0, 1))  # hits are expected here: nothing has moved yet
@@ -90,8 +104,13 @@ def main():
         verdicts["baseline"] = run(f"baseline compared with before ({tag})",
                                    [HERE / "baseline.py", repo, "--out", ev / f"baseline-{tag}.json", "--compare", before_base] + base_args)
         reports = sorted(glob.glob(str(report_dir / "architecture-*.md")))
-        sv = [HERE / "secrets_scan.py", repo, "--verify", *reports, ev] + (["--strict"] if args.final else [])
+        sv = [HERE / "secrets_scan.py", repo, "--verify", *reports, ev]
         verdicts["secrets"] = run(f"no secret value in reports or evidence ({tag})", sv)
+        if args.final:
+            # strict mode also checks plain-word values ("playlist", "layout"): it cannot be green on a real repo,
+            # so it is a list to REVIEW by hand, recorded in the validation report — not a gate
+            v = run("strict secrets check, plain-word values included (review by hand)", sv + ["--strict"])
+            verdicts["secrets strict (review)"] = "PASS" if v == "PASS" else "REVIEW"
         if any(repo.glob("*.xcodeproj")):
             verdicts["xcode"] = run("Xcode project file vs disk", [HERE / "pbxproj_check.py", repo], unverified_codes=(3,))
 
@@ -103,6 +122,9 @@ def main():
         sys.exit(1)
     if "UNVERIFIED" in verdicts.values():
         print("\nSome gate could not verify anything here: list it under 'Not verified' in the validation report.")
+    if "REVIEW" in verdicts.values():
+        print("\nThe strict secrets list needs a human review: check each listed value (shown by name and source line) and record\n"
+              "the outcome in the validation report; any real secret found there must be removed from the reports and evidence.")
     print("\nAll gates passed (evidence, not proof).")
 
 

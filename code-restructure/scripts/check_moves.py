@@ -41,7 +41,7 @@ import sys
 from pathlib import Path
 
 EXCLUDE_DIRS = {
-    ".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "venv", "__pycache__",
+    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
     ".next", ".nuxt", ".turbo", ".cache", "coverage", ".idea", ".gradle", "Pods",
 }
@@ -49,9 +49,29 @@ EXCLUDE_DIRS = {
 TOP_LEVEL_EXCLUDE = {"dist", "build", "out", "target"}
 
 
-def excluded(rel_parts):
+DEP_MANIFESTS = ("composer.json", "go.mod", "Gemfile", "package.json")
+_vendor_cache = {}
+
+
+def vendor_is_dependency(repo, parent_parts):
+    """A `vendor/` folder is a dependency directory when it sits at the repo root or next to a manifest
+    that installs into it (composer.json, go.mod, Gemfile); anywhere else it may be project source."""
+    key = tuple(parent_parts)
+    if key not in _vendor_cache:
+        d = repo.joinpath(*parent_parts) if parent_parts else repo
+        _vendor_cache[key] = not parent_parts or any((d / m).is_file() for m in DEP_MANIFESTS)
+    return _vendor_cache[key]
+
+
+def excluded(rel_parts, repo=None):
     dirs = rel_parts[:-1]
-    return any(p in EXCLUDE_DIRS for p in dirs) or (bool(dirs) and dirs[0] in TOP_LEVEL_EXCLUDE)
+    for i, p in enumerate(dirs):
+        if p == "vendor":
+            if repo is None or vendor_is_dependency(repo, dirs[:i]):
+                return True
+        elif p in EXCLUDE_DIRS:
+            return True
+    return bool(dirs) and dirs[0] in TOP_LEVEL_EXCLUDE
 BINARY_EXT = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".gz", ".tar", ".jar",
     ".class", ".pyc", ".so", ".dylib", ".dll", ".exe", ".woff", ".woff2", ".ttf", ".otf",
@@ -356,6 +376,9 @@ def bare_name(path):
     return base
 
 
+SUFFIX_TOKENS = set()  # directory-suffix tokens: matched in code and config only, not in stylesheets or prose
+
+
 def tokens_for(path):
     """Strings that would reference the old location."""
     toks = set()
@@ -373,6 +396,15 @@ def tokens_for(path):
     toks.add(p)
     if ext == "" and "/" in p:
         toks.add(p.replace("/", "."))       # package form of a directory (python, java, php-ish)
+        # the same directory referenced from a base constant or parent folder:
+        # AM_INCLUDE_PATH . 'phpexcel/x.php', __DIR__ . '/less/lessc.php', "../smarty/"
+        segs = p.split("/")
+        for i in range(1, len(segs)):
+            # only distinctive names: "less/" or "lib/" would match unrelated folders everywhere
+            if len(segs[i]) >= 3 and segs[i] not in GENERIC_NAMES:
+                t = "/".join(segs[i:]) + "/"
+                toks.add(t)
+                SUFFIX_TOKENS.add(t)
     if ext in SOURCE_EXT_FOR_MODULE:
         toks.add(stem)                       # import without extension (JS/TS)
         dotted = stem.replace("/", ".")      # python module form
@@ -394,13 +426,15 @@ def iter_files(repo: Path):
             capture_output=True, text=True, check=True, timeout=120,
         ).stdout
         for rel in out.split("\0"):
-            if rel and not excluded(Path(rel).parts):
+            if rel and not excluded(Path(rel).parts, repo):
                 yield rel
         return
     except Exception:
         pass
     for root, dirs, names in os.walk(repo):
-        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not (Path(root) == repo and d in TOP_LEVEL_EXCLUDE)]
+        parent = Path(root).relative_to(repo).parts
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not (Path(root) == repo and d in TOP_LEVEL_EXCLUDE)
+                   and not (d == "vendor" and vendor_is_dependency(repo, parent))]
         for n in names:
             yield os.path.relpath(os.path.join(root, n), repo)
 
@@ -412,7 +446,7 @@ def main():
     ap.add_argument("repo")
     ap.add_argument("--plan", help="migration plan markdown with the From|To table")
     ap.add_argument("--moves", action="append", default=[], help="FROM=TO pairs (repeatable), alternative to --plan")
-    ap.add_argument("--allow", action="append", default=[], help="file path or glob whose hits are expected (shims); repeatable")
+    ap.add_argument("--allow", action="append", default=[], help="file path or glob whose hits are expected (shims), or FILE:LINE for one reviewed line (e.g. a different folder that happens to share the name); repeatable")
     ap.add_argument("--ignore-docs", action="store_true", help="skip Markdown/RST files (default: included, since READMEs link to paths)")
     ap.add_argument("--json", help="write hits to this JSON file")
     ap.add_argument("--no-imports", action="store_true", help="skip the relative-import resolution check")
@@ -445,6 +479,9 @@ def main():
         moves.append((f.strip(), t.strip(), ""))
 
     if args.expand_globs:
+        if not any(any(ch in frm for ch in "*?[]") for frm, _, _ in moves):
+            print("no glob row in the relocation table: nothing to expand")
+            return
         for frm, to, note in moves:
             if any(ch in frm for ch in "*?[]"):
                 for p_ in sorted(repo.glob(frm.strip().rstrip("/"))):
@@ -460,7 +497,8 @@ def main():
             plan_rel = str(plan_path.resolve().relative_to(repo))
         except ValueError:
             plan_rel = None
-    allow = list(args.allow)
+    allow_lines = {a for a in args.allow if re.search(r":\d+$", a)}
+    allow = [a for a in args.allow if a not in allow_lines]
     # the plan itself and the other architecture reports legitimately mention old paths
     for name in ("architecture-audit*.md", "architecture-migration-plan*.md", "architecture-validation*.md"):
         allow += [name, "*/" + name]
@@ -479,6 +517,8 @@ def main():
         new_forms = set()
         for to in tos:
             new_forms |= tokens_for(to)
+            segs = to.strip().rstrip("/").split("/")
+            new_forms |= {"/".join(segs[i:]) + "/" for i in range(1, len(segs))}  # lib/phpexcel/ is the NEW form
         for t in tokens_for(frm):
             # a token that is a prefix of the destination would match the new path too
             if any(to.startswith(t.rstrip("/")) for to in tos) and not t.endswith("/"):
@@ -512,6 +552,15 @@ def main():
                 continue
             if (tok[-1].isalnum() or tok[-1] == "_") and (after.isalnum() or after == "_"):
                 continue
+            if tok in SUFFIX_TOKENS:
+                if os.path.splitext(rel)[1].lower() in (
+                        ".css", ".scss", ".sass", ".less", ".map", ".md", ".mdx", ".rst", ".txt", ".html", ".htm", ".svg"):
+                    continue  # "smarty/" inside a stylesheet or a doc is not the moved include directory
+                # a path relative to a base constant starts the string: CONST . 'phpexcel/x.php', "../smarty/";
+                # '/smarty/config' after another folder variable is some other smarty/ directory
+                pre = line[max(0, m.start() - 3):m.start()]
+                if not (pre.endswith(("'", '"', "`")) or pre.endswith("./")):
+                    continue
             if tok == bare_name(frm):
                 ext_r = os.path.splitext(rel)[1].lower()
                 if ext_r in (".md", ".mdx", ".rst", ".txt", ".html"):
@@ -526,6 +575,8 @@ def main():
             if any(rel == t_ or rel.startswith(t_.rstrip("/") + "/") for t_ in to.split(" | ")):
                 if tok == os.path.basename(frm) or tok == os.path.splitext(os.path.basename(frm))[0]:
                     continue
+            if f"{rel}:{ln}" in allow_lines:
+                continue
             hits.append({"file": rel, "line": ln, "token": tok, "from": frm, "to": to, "text": line.strip()[:200]})
 
     # relocation table vs disk: after the migration every From must be gone (unless it is a shim
@@ -602,8 +653,13 @@ def main():
 
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.json).write_text(json.dumps({"stale": hits, "relocation_table": table_problems, "unresolved_relative_imports": [
-            {"file": f, "line": l, "spec": s_, "moved_to": h} for f, l, s_, h in broken],
+        # with --before, the pre-existing unresolved references are already in that file: store only the
+        # delta (caused + new) and a count, so per-step evidence stays small and readable
+        listed = (caused + new_since_before) if args.before else broken
+        Path(args.json).write_text(json.dumps({"stale": hits, "relocation_table": table_problems,
+            "preexisting_unresolved_count": len(unrelated) if args.before else None,
+            "unresolved_relative_imports": [
+            {"file": f, "line": l, "spec": s_, "moved_to": h} for f, l, s_, h in listed],
             "uncertain": [{"file": f, "line": l, "spec": s_} for f, l, s_ in UNCERTAIN + UNCERTAIN_TPL]}, indent=2), encoding="utf-8")
 
     if table_problems:
@@ -635,7 +691,9 @@ def main():
                 print(f"  {f}:{l}  {s_}   <- " + (h if h.startswith("(") else f"was moved to {h}"))
             if len(caused) > 80:
                 print(f"  … {len(caused) - 80} more")
-        if unrelated:
+        if unrelated and args.before and not args.all_unresolved:
+            print(f"\n{len(unrelated)} unresolved reference(s) already unresolved on the original commit (pre-existing, not yours; --all-unresolved to list).")
+        elif unrelated:
             shown = unrelated if args.all_unresolved else unrelated[:10]
             print(f"\n{len(unrelated)} relative reference(s) that do not resolve on disk and are NOT explained by the listed moves"
                   f" (pre-existing, vendored demo pages, or a move missing from the plan):")
@@ -669,7 +727,8 @@ def main():
             print(f"    L{h['line']:<5} [{h['token']}]  {h['text']}")
         if len(hs) > 20:
             print(f"    … {len(hs) - 20} more")
-    print("\nEach hit is either an intentional compatibility shim (add it with --allow) or a missed reference.")
+    print("\nEach hit is either an intentional compatibility shim (add it with --allow), a reviewed false match such as another\n"
+          "folder with the same name (add --allow FILE:LINE and say so in the validation report), or a missed reference.")
     report_broken()
     sys.exit(1)
 

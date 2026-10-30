@@ -134,9 +134,13 @@ def detect_checks(repo: Path):
         add("cargo-doc", "cargo doc --workspace --no-deps", "lint", "broken intra-doc links after moves")
 
     # ---------- PHP ----------
+    if which("php") and (has(repo, "composer.json") or any(repo.glob("*.php")) or any(repo.glob("*/*.php")) or any(repo.glob("*/*/*.php"))):
+        # legacy PHP without Composer still has a syntax check; counts are printed pytest-style so a rise in
+        # failures is compared even when some files already fail (e.g. code written for an older PHP)
+        add("php-lint", "n=0; f=0; while IFS= read -r -d '' x; do if php -l \"$x\" >/dev/null 2>&1; then n=$((n+1)); else f=$((f+1)); echo \"FAIL $x\"; fi; "
+            "done < <(find . -name '*.php' -not -path './vendor/*' -not -path '*/node_modules/*' -not -path './.git/*' -print0); "
+            "echo \"$n passed, $f failed\"; [ $f -eq 0 ]", "build", "syntax only; counts compared")
     if has(repo, "composer.json"):
-        add("php-lint", "find . -name '*.php' -not -path './vendor/*' -not -path './node_modules/*' -print0 | xargs -0 -n1 -P4 php -l > /dev/null", "build",
-            "syntax only")
         add("composer-validate", "composer validate --no-check-publish", "lint")
         if has(repo, "phpunit.xml", "phpunit.xml.dist"):
             add("phpunit", "vendor/bin/phpunit", "test")
@@ -204,6 +208,8 @@ def detect_checks(repo: Path):
 
 
 COUNTERS = [
+    ("php-lint", r"(\d+) passed", "passed"),
+    ("php-lint", r"(\d+) failed", "failed"),
     ("pytest", r"(\d+) passed", "passed"),
     ("pytest", r"(\d+) failed", "failed"),
     ("pytest", r"(\d+) errors?\b", "errors"),
@@ -277,7 +283,7 @@ def run_check(repo: Path, check, timeout):
     t0 = time.time()
     try:
         proc = subprocess.run(
-            check["cmd"], shell=True, cwd=repo, capture_output=True, text=True,
+            check["cmd"], shell=True, executable="/bin/bash" if shutil.which("bash") else None, cwd=repo, capture_output=True, text=True,
             timeout=timeout, env={**os.environ, "CI": os.environ.get("CI", "1"), "NO_COLOR": "1", "FORCE_COLOR": "0"},
         )
         rc, out, err = proc.returncode, proc.stdout, proc.stderr

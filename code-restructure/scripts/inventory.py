@@ -25,7 +25,7 @@ from pathlib import Path
 # build outputs are excluded only when they sit at the repository root: `internal/build/` is source
 TOP_LEVEL_EXCLUDE = {"dist", "build", "out", "target"}
 ALWAYS_EXCLUDE = {
-    ".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "venv", "env",
+    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "env",
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".nox",
     ".next", ".nuxt", ".svelte-kit", ".turbo",
     ".cache", ".parcel-cache", "coverage", "htmlcov", ".idea", ".vscode", ".DS_Store",
@@ -144,6 +144,11 @@ def walk_files(repo: Path, extra_exclude):
                 excluded_dirs.add(str(Path(*parts[: parts.index(hit) + 1])))
                 continue
             if parts[-1] in exclude:  # a file name in the list (.DS_Store)
+                continue
+            vi = next((i for i, p in enumerate(parts[:-1]) if p == "vendor"
+                       and (i == 0 or any((repo.joinpath(*parts[:i]) / m).is_file() for m in ("composer.json", "go.mod", "Gemfile")))), None)
+            if vi is not None:  # dependency vendor/ (root or next to a manifest); a nested vendor/ elsewhere is source
+                excluded_dirs.add(str(Path(*parts[: vi + 1])))
                 continue
             if (repo / rel).is_file():
                 files.append(rel)

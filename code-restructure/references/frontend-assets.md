@@ -110,9 +110,12 @@ templates and server config: assets are referenced by string far more often than
   directory* is not; Less with `relativeUrls: true` is the opposite.
 - Tailwind `content` globs: a template folder moved outside the glob compiles to a CSS file that
   lacks every class used there. The build succeeds. Compare the output size and class list.
-- **Compiled template caches** (Smarty `templates_c/`, Twig cache, Blade `storage/framework/views`)
-  store absolute source paths: purge them at deploy, otherwise the old location keeps being read
-  (seen on Music Admix: the Smarty compile dir had to be cleared after the move).
+- **Compiled template caches** (Smarty `templates_c/` or its configured compile dir, Twig cache, Blade
+  `storage/framework/views`) store paths resolved at compile time — the template source and, for
+  Smarty, the `include` of every plugin file the template uses. After the library or the templates
+  move, a page compiled before the move can fail (`Call to undefined function smarty_modifier_…`)
+  until the cache is purged. Make the purge a deployment step in the validation report, and test it:
+  deploy the old commit, render, deploy the branch over it, render again.
 - Case-sensitive servers: `Img/Logo.PNG` works on macOS and Windows, 404s on Linux. A move is the
   moment this bites; resolve references case-sensitively, as `check_moves.py` does on Linux.
 - Hashed filenames (`site.3f9a.css`) come from a manifest — edit the source path in the build

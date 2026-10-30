@@ -164,6 +164,36 @@ class CheckMoves(unittest.TestCase):
         finally:
             sys.argv = argv
 
+    def test_directory_referenced_from_a_base_constant(self):
+        r = make_repo({"include/phpexcel/PHPExcel.php": "", "include/less/Less.php": "",
+                       "include/bootstrap.php": "<?php\nrequire AM_INCLUDE_PATH . 'phpexcel/PHPExcel.php';\nrequire AM_INCLUDE_PATH . 'less/Less.php';\n"
+                                                "$c = AM_CACHE_PATH . 'less/' . $t;\n$d = $incdir . '/phpexcel/tmp';\n"})
+        moved(r, "include/phpexcel", "include/lib/phpexcel")
+        moved(r, "include/less", "include/lib/less")
+        args = ["--moves", "include/phpexcel=include/lib/phpexcel", "--moves", "include/less=include/lib/less", "--no-imports"]
+        code, out = run_script("check_moves.py", r, *args)
+        self.assertEqual(code, 1, out)
+        self.assertIn("L2", out)
+        self.assertIn("L3", out)
+        self.assertIn("L4", out)   # AM_CACHE_PATH . 'less/' — same name, other folder: flagged for review
+        self.assertNotIn("L5", out)  # '/phpexcel/tmp' after another variable: not anchored, not flagged
+        write(r, {"include/bootstrap.php": "<?php\nrequire AM_INCLUDE_PATH . 'lib/phpexcel/PHPExcel.php';\nrequire AM_INCLUDE_PATH . 'lib/less/Less.php';\n"
+                                           "$c = AM_CACHE_PATH . 'less/' . $t;\n"})
+        code, out = run_script("check_moves.py", r, *args, "--allow", "include/bootstrap.php:4")
+        self.assertEqual(code, 0, out)
+
+    def test_nested_vendor_without_manifest_is_source(self):
+        r = make_repo({"old/one.py": "", "development/vendor/tool/x.js": "// old/one.py\n", "vendor/dep/y.js": "// old/one.py\n"})
+        moved(r, "old/one.py", "new/one.py")
+        code, out = run_script("check_moves.py", r, "--moves", "old/one.py=new/one.py", "--no-imports")
+        self.assertIn("development/vendor/tool/x.js", out)
+        self.assertNotIn("vendor/dep/y.js", out.replace("development/vendor/tool/x.js", ""))
+
+    def test_expand_globs_without_glob_rows_says_so(self):
+        r = make_repo({"a.py": "", "plan.md": "| From | To | Note |\n|---|---|---|\n| a.py | b/a.py | |\n"})
+        code, out = run_script("check_moves.py", r, "--plan", "plan.md", "--expand-globs")
+        self.assertIn("nothing to expand", out)
+
     def test_no_imports_flag_skips_resolution(self):
         r = make_repo({"src/a/x.ts": "import { y } from './y';\n", "src/a/y.ts": ""})
         moved(r, "src/a/x.ts", "src/b/x.ts")

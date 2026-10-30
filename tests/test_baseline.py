@@ -96,6 +96,15 @@ class Detect(unittest.TestCase):
         r = make_repo({"pyproject.toml": "[tool.ruff]\nline-length = 100\n", "a.py": "x = 1\n"})
         self.assertIn("ruff", [c["id"] for c in baseline.detect_checks(r)])
 
+    def test_php_lint_without_composer_counts(self):
+        import shutil
+        if not shutil.which("php"):
+            self.skipTest("php not installed")
+        r = make_repo({"index.php": "<?php echo 1;\n", "lib/bad.php": "<?php echo (;\n"})
+        self.assertIn("php-lint", [c["id"] for c in baseline.detect_checks(r)])
+        code, out = run_script("baseline.py", r, "--only", "php-lint", "--out", r / "b.json")
+        self.assertIn("'passed': 1, 'failed': 1", out)
+
     def test_pytest_detected_from_tox_ini(self):
         r = make_repo({"tox.ini": "[testenv]\ncommands = pytest\n", "setup.py": ""})
         self.assertIn("pytest", [c["id"] for c in baseline.detect_checks(r)])

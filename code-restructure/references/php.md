@@ -56,3 +56,23 @@ Leave in place: `bootstrap/`, `config/`, `database/`, `public/`, `resources/`, `
 - `$this->load(__DIR__.'/Commands')` and similar directory scans silently stop finding commands moved elsewhere.
 - Facade aliases, `config/app.php` providers, `composer.json` `extra.laravel.providers` and `dont-discover` all name classes by FQN.
 - Blade view paths map to directories (`resources/views/admin/users.blade.php` ↔ `view('admin.users')`); moving templates renames views, which are referenced from controllers, mail classes and other views.
+
+## Legacy PHP without Composer, tests or a database here
+Common case for this skill: an application written for PHP 5.x (mcrypt, `each()`, `$s{0}` string offsets),
+no `composer.json`, no tests, entry points that need MySQL. The floor is built from what can run:
+- **Syntax**: `baseline.py` runs `php -l` on every `.php` file and reports `N passed, M failed`; files that
+  fail only because of the PHP version (string offsets with braces, `each()`) fail identically before and
+  after, which is fine as long as the count does not rise.
+- **Version gaps**: never edit the repository to make it run on the local PHP. Put shims OUTSIDE the
+  repo and apply them to a temporary copy of the tree: constants for removed extensions
+  (`MCRYPT_RIJNDAEL_256`), polyfills (`each`), a dummy config file, a SQLite or in-memory stand-in for the
+  database class. List every shim in the validation report under "Not verified": what it replaces is
+  exactly what was not exercised.
+- **Runtime floor**: one PHP process per check, printing `N passed, M failed` at the end: load the config
+  and bootstrap, autoload every class (`class_exists` over the classes directory), instantiate each
+  module, render one or two real templates through the template engine, run each moved library once
+  (write and read a file with the spreadsheet library, compile a stylesheet with the LESS compiler…),
+  start each CLI entry point with no arguments. Pass the script to `gate.py` with `--extra`.
+- **Deployment-time effects**: compiled template caches, opcode caches, absolute paths written into
+  generated files. Reproduce a deployment over the previous version when you can (see
+  `frontend-assets.md`, compiled template caches).

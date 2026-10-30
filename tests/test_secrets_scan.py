@@ -95,6 +95,13 @@ class SecretsScan(unittest.TestCase):
         code, out = run_script("secrets_scan.py", r, "--verify", r / "docs", "--strict")
         self.assertEqual(code, 1, out)
 
+    def test_bracketed_placeholder_is_not_a_secret_and_leaks_name_their_source(self):
+        r = make_repo({"a.php": "<?php $collectorKey = '[UNDEFINED]';\n$API_KEY = 'abcdef123456';\n", "docs/r.md": "abcdef123456\n"})
+        code, out = run_script("secrets_scan.py", r, "--all")
+        self.assertNotIn("collectorKey", out)
+        code, out = run_script("secrets_scan.py", r, "--verify", r / "docs")
+        self.assertIn("value from a.php:2", out)
+
     def test_plan_tags_moved_files(self):
         r = self.repo()
         write(r, {"plan.md": "| From | To | Note |\n|---|---|---|\n| config.php | conf/config.php | |\n"})

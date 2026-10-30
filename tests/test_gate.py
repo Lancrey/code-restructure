@@ -30,6 +30,20 @@ class Gate(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("All gates passed", out)
 
+    def test_record_before_with_nothing_green_is_unverified(self):
+        r = make_repo({**REPO, "tests/test_a.py": "def test_a():\n    assert False\n"})
+        code, out = run_script("gate.py", r, "--plan", "docs/architecture-migration-plan.md", "--report-dir", "docs",
+                               "--record-before", "--only", "extra-1", "--extra", "false")
+        self.assertIn("UNVERIFIED", out)
+
+    def test_final_strict_is_a_review_not_a_failure(self):
+        r = make_repo({**REPO, "conf.py": 'key = "playlist"\n'})
+        run_script("gate.py", r, *ARGS, "--record-before")
+        write(r, {"docs/architecture-audit.md": "# audit\nthe playlist module\n"})
+        code, out = run_script("gate.py", r, *ARGS, "--final")
+        self.assertIn("REVIEW", out)
+        self.assertNotIn("FAIL       secrets", out)
+
     def test_step_without_before_is_refused(self):
         r = make_repo(REPO)
         code, out = run_script("gate.py", r, *ARGS, "--step", "1")

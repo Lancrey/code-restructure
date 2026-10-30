@@ -140,7 +140,7 @@ class FrontendAssets(unittest.TestCase):
         code, out = run_script("check_moves.py", r, "--moves", "css=assets/css", "--before", r / "before.json", "--allow", "before.json")
         self.assertEqual(code, 0, out)
         self.assertNotIn("broken by the listed moves", out)
-        self.assertIn("assets/css/site.css:1  url(../img/gone.png)", out)
+        self.assertIn("1 unresolved reference(s) already unresolved on the original commit", out)
 
 
 if __name__ == "__main__":

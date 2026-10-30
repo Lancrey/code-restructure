@@ -1,6 +1,6 @@
 # Report templates
 
-Write all three in the language the user chose in Phase 0 (asked explicitly; README language only if no one could answer). Keep paths, identifiers and commands verbatim. Replace `<…>` placeholders; drop a section only if it is genuinely empty, and then say "none" rather than omitting it.
+Write all three in the language the user chose in Phase 0 (asked explicitly; README language only if no one could answer). Keep paths, identifiers and commands verbatim. Replace `<…>` placeholders. A section that applies but has nothing in it stays, with "none"; the only sections you omit are the ones the template marks as conditional ("Only when …").
 
 ---
 
@@ -155,7 +155,7 @@ Removal of shims is an open question for the user — list it under Decisions.>
 ```markdown
 # Validation report — <project name>
 
-Branch: <branch> · Commits: <first sha>..<last sha> · PR/MR: <link or "not opened">
+Branch: <branch> · Commits: <first sha>..<sha of the last migration step> (this report is committed after them) · PR/MR: <link or "not opened">
 
 ## Summary for stakeholders
 <Non-technical, 8–12 lines, written for a manager or product owner who will not read the

@@ -48,7 +48,7 @@ import sys
 from pathlib import Path
 
 EXCLUDE_DIRS = {
-    ".git", ".hg", ".svn", "node_modules", "vendor", ".venv", "venv", "__pycache__",
+    ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
     ".next", ".nuxt", ".turbo", ".cache", "coverage", ".idea", ".gradle", "Pods",
 }
@@ -84,7 +84,7 @@ TOKEN_FORMATS = [
 ]
 PLACEHOLDER = re.compile(
     r"^(?:x+|\*+|\.+|changeme|change[_-]?me|your[_-].*|my[_-]?(?:secret|key|password|token)|example.*|"
-    r"dummy.*|test.*|todo|none|null|false|true|password|secret|token|<.*>|\$\{.*\}|\{\{.*\}\}|%\(.*\)s|%.*%)$", re.I)
+    r"dummy.*|test.*|todo|none|null|false|true|password|secret|token|<.*>|\[[A-Z0-9_ -]*\]|\$\{.*\}|\{\{.*\}\}|%\(.*\)s|%.*%)$", re.I)
 GENERIC_SECRET_NAMES = {"key", "keys", "token", "tokens", "salt", "auth", "credential", "credentials", "crypto"}
 CODE_LOOKUP = re.compile(r"(getenv|environ|process\.env|config\(|ENV\[|\$_(?:ENV|SERVER)|System\.getenv|os\.Getenv)", re.I)
 
@@ -129,11 +129,15 @@ def iter_files(repo, excludes, include_ignored=True):
     except Exception:
         rels = []
         for root, dirs, names in os.walk(repo):
-            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not (Path(root) == repo and d in TOP_LEVEL_EXCLUDE)]
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not (Path(root) == repo and d in TOP_LEVEL_EXCLUDE)]  # vendor: filtered below
             rels += [os.path.relpath(os.path.join(root, n), repo) for n in names]
     for rel in rels:
         parts = Path(rel).parts
         if any(p in EXCLUDE_DIRS for p in parts[:-1]) or (len(parts) > 1 and parts[0] in TOP_LEVEL_EXCLUDE):
+            continue
+        # vendor/ is a dependency folder at the root or next to composer.json/go.mod/Gemfile; elsewhere it is source
+        if any(p == "vendor" and (i == 0 or any((repo.joinpath(*parts[:i]) / m).is_file() for m in ("composer.json", "go.mod", "Gemfile")))
+               for i, p in enumerate(parts[:-1])):
             continue
         if os.path.splitext(rel)[1].lower() in BINARY_EXT:
             continue
@@ -245,7 +249,7 @@ def verify(repo, hits, targets, strict=False):
         # (a plain word such as "authority" would flag legitimate prose in the reports) —
         # unless --strict, which checks every candidate value of 6+ characters
         if strict or c == "high" or (c == "low" and len(val) >= 8 and re.search(r"[\d@#$%^&*!+=]", val)):
-            values.setdefault(val, f"{name}")
+            values.setdefault(val, f"{name} (value from {rel}:{ln}, {c})")
     leaks = []
     files = []
     import glob as globmod
