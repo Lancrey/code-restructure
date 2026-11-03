@@ -23,4 +23,4 @@ Run from the repository root.
 - Make shared workflow changes in `code-restructure/`. OpenAI-only changes go in `packaging/openai/adapter.md` (instructions), `packaging/openai/plugin.json` (metadata) or `OPENAI_METADATA` in `tools/build_openai.py` (the skill description). Never edit `dist/`.
 - When a script's flags, outputs or exit codes change, update `SKILL.md` in the same change: the workflow calls them by name.
 - Passing CI covers the scripts and the packaging, not how an agent follows `SKILL.md` or the references. When you change those files, say in the PR what you verified and how.
-- Documentation uses British spelling ("behaviour").
+- Documentation uses Oxford spelling ("behaviour", "reorganize").

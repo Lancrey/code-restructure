@@ -35,7 +35,7 @@ Anything callers outside the repository depend on: exports, import paths, CLI co
 _Avoid_: public surface, public path
 
 **Compatibility shim**:
-A re-export, manifest alias or symlink that keeps an old public path working. Each one carries a comment saying where the real code lives, and removing it is the user's call.
+A re-export, manifest alias or symlink that keeps an old path working. Each one carries a comment saying where the real code lives, and removing it is the user's call.
 _Avoid_: forwarding shim, forwarding module, compatibility layer
 
 ### The verification
@@ -55,7 +55,7 @@ _Avoid_: broken reference
 
 **Not verified**:
 The label for anything a run could not check. A clean result is reported as "verified by X".
-_Avoid_: safe, fully safe
+_Avoid_: "safe" or "fully safe" as a result
 
 ### The gates
 
