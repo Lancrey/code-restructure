@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings"],
+  "properties": {
+    "verdict": {"type": "string", "enum": ["pass", "changes_requested"]},
+    "summary": {"type": "string"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["axis", "severity", "file", "line", "claim", "evidence", "fix"],
+        "properties": {
+          "axis": {"type": "string", "enum": ["spec", "standards"]},
+          "severity": {"type": "string", "enum": ["blocking", "advisory"]},
+          "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "claim": {"type": "string"},
+          "evidence": {"type": "string"},
+          "fix": {"type": "string"}
+        }
+      }
+    }
+  }
+}
