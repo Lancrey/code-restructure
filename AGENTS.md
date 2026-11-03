@@ -14,7 +14,7 @@ A skill (`/restructure`) that audits a repository's architecture and moves files
 Run from the repository root.
 
 - Tests: `python3 -m unittest discover -s tests -v`. The Sass end-to-end tests skip without `sass` and the TypeScript ones without `tsc`; CI installs both.
-- Lint: `ruff check --select E9,F code-restructure/scripts tests`
+- Lint: `ruff check --select E9,F code-restructure/scripts tests tools`
 - Plugin build: `python3 tools/build_openai.py --zip`
 
 ## Rules

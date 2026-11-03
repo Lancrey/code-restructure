@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "language": "en",
+  "base_branch": "main",
+  "setup": "python3 -m pip install -q pytest ruff && npm install -g sass@1.80.6 typescript@5.6.3",
+  "check": {
+    "fast": "ruff check --select E9,F code-restructure/scripts tests tools && python3 -m py_compile code-restructure/scripts/*.py tools/*.py",
+    "full": "ruff check --select E9,F code-restructure/scripts tests tools && python3 -m py_compile code-restructure/scripts/*.py tools/*.py && python3 tools/build_openai.py --zip && python3 -m unittest discover -s tests",
+    "timeout_seconds": 1800
+  },
+  "tracker": {
+    "type": "github"
+  },
+  "roles": {
+    "implementer": {
+      "agent": "claude",
+      "model": null,
+      "max_budget_usd": 3.0,
+      "max_turns": 80,
+      "timeout_seconds": 2400
+    },
+    "reviewer": {
+      "agent": "codex",
+      "model": null,
+      "max_budget_usd": 1.0,
+      "max_turns": 30,
+      "timeout_seconds": 900
+    },
+    "advisor": {
+      "agent": "claude",
+      "model": null,
+      "max_budget_usd": 1.0,
+      "max_turns": 40,
+      "timeout_seconds": 900
+    }
+  },
+  "caps": {
+    "rework_attempts": 2,
+    "max_changed_lines": 600,
+    "max_diff_bytes": 200000,
+    "max_run_usd": 8.0,
+    "runs_per_day": 5
+  },
+  "gates": {
+    "accepted_rehearsals": 3
+  },
+  "protected_paths": [
+    ".factory/",
+    ".github/workflows/",
+    ".claude/",
+    ".codex/",
+    ".agents/",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CODING_STANDARDS.md"
+  ]
+}
