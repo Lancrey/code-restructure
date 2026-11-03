@@ -1,8 +1,10 @@
 # ChatGPT and Codex compatibility
 
 This repository keeps `code-restructure/` **unchanged** as the canonical
-Claude skill. The OpenAI distribution is generated from it, not maintained as a
-second independent fork.
+Claude skill. The OpenAI plugin is generated from it, not maintained as a
+separate copy. One source: a change to the workflow or its safeguards reaches
+every host, with no second copy to drift, and OpenAI-specific wording never
+touches the Claude skill.
 
 ## Build the plugin
 
